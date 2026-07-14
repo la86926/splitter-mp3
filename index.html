@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Splitter MP3 — Corta y une audio en tu navegador</title>
+<meta name="description" content="Corta y une archivos de audio (MP3, WAV, M4A, FLAC y más) directamente en tu navegador. Sin subir nada a ningún servidor.">
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23E4640B"/><g stroke="white" stroke-width="4" stroke-linecap="round"><line x1="14" y1="26" x2="14" y2="38"/><line x1="23" y1="18" x2="23" y2="46"/><line x1="32" y1="12" x2="32" y2="52"/><line x1="41" y1="20" x2="41" y2="44"/><line x1="50" y1="27" x2="50" y2="37"/></g></svg>'>
+<style>
+  /* ---------- Tokens ---------- */
+  :root{
+    --accent:        #E4640B;
+    --accent-strong: #C85608;
+    --accent-soft:   rgba(228,100,11,.12);
+    --radius-l: 20px;
+    --radius-m: 12px;
+    --radius-s: 9px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --shadow-card: 0 1px 2px rgba(0,0,0,.04), 0 8px 28px rgba(0,0,0,.06);
+    --dur: .22s;
+  }
+  :root[data-theme="light"]{
+    color-scheme: light;
+    --bg:        #F5F5F7;
+    --surface:   #FFFFFF;
+    --surface-2: #F0F0F2;
+    --text:      #1D1D1F;
+    --text-2:    #6E6E73;
+    --text-3:    #9B9BA0;
+    --border:    rgba(0,0,0,.09);
+    --wave-idle: #C9C9CE;
+    --dim:       rgba(245,245,247,.62);
+    --seg-bg:    rgba(0,0,0,.055);
+    --seg-pill:  #FFFFFF;
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --accent:        #FF9F0A;
+    --accent-strong: #FFB340;
+    --accent-soft:   rgba(255,159,10,.14);
+    --bg:        #0B0B0D;
+    --surface:   #1C1C1E;
+    --surface-2: #26262A;
+    --text:      #F5F5F7;
+    --text-2:    #98989F;
+    --text-3:    #6C6C72;
+    --border:    rgba(255,255,255,.10);
+    --wave-idle: #48484E;
+    --dim:       rgba(11,11,13,.62);
+    --seg-bg:    rgba(255,255,255,.08);
+    --seg-pill:  #3A3A3E;
+    --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45);
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html{ -webkit-text-size-adjust:100%; }
+  body{
+    font-family:var(--font);
+    background:var(--bg);
+    color:var(--text);
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+    transition:background var(--dur) ease, color var(--dur) ease;
+  }
+  button{ font-family:inherit; cursor:pointer; }
+  input{ font-family:inherit; }
+  :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
+
+  /* ---------- Layout ---------- */
+  .wrap{ max-width:860px; margin:0 auto; padding:0 20px 64px; }
+
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:26px 0 8px; gap:16px; flex-wrap:wrap;
+  }
+  .brand{ display:flex; align-items:center; gap:13px; }
+  .brand-icon{
+    width:44px; height:44px; border-radius:11px; flex:none;
+    background:linear-gradient(160deg, var(--accent), var(--accent-strong));
+    display:grid; place-items:center;
+    box-shadow:0 4px 14px rgba(228,100,11,.32);
+  }
+  .brand-icon svg{ display:block; }
+  .brand h1{ font-size:21px; font-weight:700; letter-spacing:-.02em; }
+  .brand p{ font-size:12.5px; color:var(--text-2); margin-top:1px; }
+
+  /* Segmented control (tema y pestañas) */
+  .seg{
+    position:relative; display:inline-flex; align-items:center;
+    background:var(--seg-bg); border-radius:999px; padding:3px;
+    user-select:none;
+  }
+  .seg button{
+    position:relative; z-index:1; border:0; background:transparent;
+    padding:6px 13px; border-radius:999px; font-size:13px; font-weight:500;
+    color:var(--text-2); display:flex; align-items:center; gap:6px;
+    transition:color var(--dur) ease;
+  }
+  .seg button[aria-pressed="true"]{ color:var(--text); }
+  .seg .pill{
+    position:absolute; top:3px; bottom:3px; border-radius:999px;
+    background:var(--seg-pill);
+    box-shadow:0 1px 4px rgba(0,0,0,.18);
+    transition:left var(--dur) cubic-bezier(.3,.9,.35,1), width var(--dur) cubic-bezier(.3,.9,.35,1);
+    z-index:0;
+  }
+  .seg svg{ width:14px; height:14px; }
+
+  .tabs-row{ display:flex; justify-content:center; margin:26px 0 22px; }
+  .tabs-row .seg button{ padding:8px 26px; font-size:14px; }
+
+  /* ---------- Card ---------- */
+  .card{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:var(--radius-l);
+    box-shadow:var(--shadow-card);
+    padding:26px;
+    transition:background var(--dur) ease, border-color var(--dur) ease;
+  }
+  .panel{ display:none; }
+  .panel.active{ display:block; animation:fadeUp .3s ease; }
+  @keyframes fadeUp{ from{ opacity:0; transform:translateY(6px);} to{ opacity:1; transform:none;} }
+
+  /* ---------- Dropzone ---------- */
+  .dropzone{
+    border:1.6px dashed var(--border);
+    border-radius:var(--radius-m);
+    padding:52px 24px;
+    text-align:center;
+    color:var(--text-2);
+    transition:border-color var(--dur) ease, background var(--dur) ease;
+    cursor:pointer;
+  }
+  .dropzone.dragover{ border-color:var(--accent); background:var(--accent-soft); }
+  .dropzone .dz-icon{
+    width:52px; height:52px; margin:0 auto 14px; border-radius:14px;
+    background:var(--surface-2); display:grid; place-items:center; color:var(--accent);
+  }
+  .dropzone h3{ font-size:16px; font-weight:600; color:var(--text); margin-bottom:5px; }
+  .dropzone p{ font-size:13px; }
+  .dropzone .formats{ margin-top:14px; font-size:11.5px; color:var(--text-3); letter-spacing:.02em; }
+
+  /* ---------- Editor de recorte ---------- */
+  .file-row{
+    display:flex; align-items:center; gap:12px; margin-bottom:20px; flex-wrap:wrap;
+  }
+  .badge{
+    font-size:11px; font-weight:700; letter-spacing:.06em;
+    color:var(--accent-strong); background:var(--accent-soft);
+    padding:4px 9px; border-radius:6px; text-transform:uppercase;
+  }
+  .file-name{ font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:min(46ch, 100%); }
+  .file-meta{ font-size:12.5px; color:var(--text-2); }
+  .link-btn{
+    margin-left:auto; border:0; background:none; color:var(--accent);
+    font-size:13px; font-weight:500; padding:4px 2px;
+  }
+  .link-btn:hover{ text-decoration:underline; }
+
+  /* Waveform + trimmer */
+  .trim-shell{ padding:14px 0 4px; }
+  .wave-box{
+    position:relative; height:150px; border-radius:var(--radius-m);
+    background:var(--surface-2); overflow:visible; touch-action:none;
+  }
+  #waveCanvas{ position:absolute; inset:0; width:100%; height:100%; border-radius:var(--radius-m); display:block; }
+  .dim-left,.dim-right{
+    position:absolute; top:0; bottom:0; background:var(--dim);
+    pointer-events:none; border-radius:var(--radius-m) 0 0 var(--radius-m);
+  }
+  .dim-right{ border-radius:0 var(--radius-m) var(--radius-m) 0; }
+
+  .sel-frame{
+    position:absolute; top:-3px; bottom:-3px;
+    border:3px solid var(--accent);
+    border-left:none; border-right:none;
+    cursor:grab;
+  }
+  .sel-frame:active{ cursor:grabbing; }
+  .handle{
+    position:absolute; top:-3px; bottom:-3px; width:22px;
+    background:var(--accent);
+    display:grid; place-items:center;
+    touch-action:none; cursor:ew-resize; border:0;
+  }
+  .handle:hover, .handle:focus-visible{ background:var(--accent-strong); }
+  .handle.left{  border-radius:10px 0 0 10px; }
+  .handle.right{ border-radius:0 10px 10px 0; }
+  .handle svg{ width:8px; height:16px; color:#fff; pointer-events:none; }
+
+  .time-tag{
+    position:absolute; top:-34px; transform:translateX(-50%);
+    background:var(--text); color:var(--bg);
+    font-size:11.5px; font-weight:600; font-variant-numeric:tabular-nums;
+    padding:3px 8px; border-radius:7px; white-space:nowrap; pointer-events:none;
+    transition:opacity var(--dur) ease;
+  }
+  .playhead{
+    position:absolute; top:0; bottom:0; width:2px; background:var(--text);
+    border-radius:2px; pointer-events:none; display:none;
+  }
+
+  .ruler{
+    display:flex; justify-content:space-between; margin-top:8px;
+    font-size:11px; color:var(--text-3); font-variant-numeric:tabular-nums;
+  }
+
+  /* Transporte + lecturas */
+  .transport{
+    display:flex; align-items:center; gap:18px; margin-top:20px; flex-wrap:wrap;
+  }
+  .play-btn{
+    width:52px; height:52px; border-radius:50%; border:0; flex:none;
+    background:var(--accent); color:#fff;
+    display:grid; place-items:center;
+    box-shadow:0 5px 16px rgba(228,100,11,.35);
+    transition:transform .15s ease, background var(--dur) ease;
+  }
+  .play-btn:hover{ transform:scale(1.05); }
+  .play-btn:active{ transform:scale(.96); }
+  .play-btn svg{ width:20px; height:20px; }
+  .readouts{ display:flex; gap:26px; flex-wrap:wrap; }
+  .readout .lbl{ font-size:11px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--text-3); }
+  .readout .val{ font-size:19px; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.01em; margin-top:2px; }
+  .readout .val.acc{ color:var(--accent-strong); }
+
+  /* Entradas de tiempo */
+  .time-grid{
+    display:grid; grid-template-columns:1fr 1fr; gap:18px;
+    margin-top:24px;
+  }
+  @media (max-width:560px){ .time-grid{ grid-template-columns:1fr; } }
+  .time-field{
+    background:var(--surface-2); border-radius:var(--radius-m); padding:14px 16px;
+  }
+  .time-field .lbl{
+    font-size:11px; font-weight:600; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--text-3); margin-bottom:9px; display:block;
+  }
+  .hms{ display:flex; align-items:center; gap:6px; }
+  .hms input{
+    width:64px; text-align:center; font-size:16px; font-weight:600;
+    font-variant-numeric:tabular-nums;
+    background:var(--surface); color:var(--text);
+    border:1px solid var(--border); border-radius:var(--radius-s);
+    padding:8px 4px; -moz-appearance:textfield;
+  }
+  .hms input::-webkit-outer-spin-button,
+  .hms input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  .hms input:focus{ border-color:var(--accent); outline:none; }
+  .hms .sep{ color:var(--text-3); font-weight:600; }
+  .hms .unit-row{ display:flex; gap:6px; }
+  .unit-caption{ display:flex; gap:6px; margin-top:5px; }
+  .unit-caption span{ width:64px; text-align:center; font-size:10px; color:var(--text-3); letter-spacing:.04em; }
+  .unit-caption .sp{ width:9px; }
+
+  /* Botones de acción */
+  .actions{ margin-top:26px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .btn-primary{
+    border:0; border-radius:999px; padding:13px 30px;
+    background:var(--accent); color:#fff;
+    font-size:15px; font-weight:600; letter-spacing:-.01em;
+    display:inline-flex; align-items:center; gap:9px;
+    box-shadow:0 5px 16px rgba(228,100,11,.35);
+    transition:transform .15s ease, background var(--dur) ease, opacity var(--dur) ease;
+  }
+  .btn-primary:hover{ background:var(--accent-strong); transform:translateY(-1px); }
+  .btn-primary:disabled{ opacity:.45; transform:none; cursor:default; box-shadow:none; }
+  .btn-primary svg{ width:16px; height:16px; }
+
+  .progress{
+    flex:1; min-width:160px; height:6px; border-radius:999px;
+    background:var(--surface-2); overflow:hidden; display:none;
+  }
+  .progress .bar{
+    height:100%; width:0%; border-radius:999px;
+    background:linear-gradient(90deg, var(--accent), var(--accent-strong));
+    transition:width .2s ease;
+  }
+  .status-line{ font-size:12.5px; color:var(--text-2); min-height:18px; margin-top:10px; }
+
+  /* ---------- Unir ---------- */
+  .join-list{ list-style:none; margin:18px 0 4px; display:flex; flex-direction:column; gap:9px; }
+  .join-item{
+    display:flex; align-items:center; gap:12px;
+    background:var(--surface-2); border-radius:var(--radius-m);
+    padding:11px 14px;
+  }
+  .join-item .num{
+    width:26px; height:26px; border-radius:50%; flex:none;
+    background:var(--accent-soft); color:var(--accent-strong);
+    display:grid; place-items:center; font-size:12.5px; font-weight:700;
+    font-variant-numeric:tabular-nums;
+  }
+  .join-item .jname{ font-size:13.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .join-item .jmeta{ font-size:11.5px; color:var(--text-3); flex:none; }
+  .icon-btn{
+    width:30px; height:30px; border-radius:8px; border:0; flex:none;
+    background:transparent; color:var(--text-2);
+    display:grid; place-items:center;
+    transition:background var(--dur) ease, color var(--dur) ease;
+  }
+  .icon-btn:hover{ background:var(--surface); color:var(--text); }
+  .icon-btn:disabled{ opacity:.3; cursor:default; }
+  .icon-btn svg{ width:15px; height:15px; }
+  .warn{
+    margin-top:14px; font-size:13px; color:#B3261E;
+    background:rgba(179,38,30,.09); border-radius:var(--radius-s);
+    padding:10px 14px; display:none;
+  }
+  :root[data-theme="dark"] .warn{ color:#FF6961; background:rgba(255,105,97,.12); }
+  .add-more{
+    margin-top:14px; width:100%; border:1.6px dashed var(--border);
+    background:none; color:var(--text-2); border-radius:var(--radius-m);
+    padding:13px; font-size:13.5px; font-weight:500;
+    transition:border-color var(--dur) ease, color var(--dur) ease;
+  }
+  .add-more:hover{ border-color:var(--accent); color:var(--accent); }
+
+  footer{
+    text-align:center; margin-top:34px; font-size:12px; color:var(--text-3);
+    line-height:1.7;
+  }
+
+  /* Toast */
+  .toast{
+    position:fixed; left:50%; bottom:28px; transform:translate(-50%, 20px);
+    background:var(--text); color:var(--bg);
+    font-size:13.5px; font-weight:500;
+    padding:11px 20px; border-radius:999px;
+    box-shadow:0 8px 26px rgba(0,0,0,.28);
+    opacity:0; pointer-events:none;
+    transition:opacity .25s ease, transform .25s ease;
+    max-width:min(92vw, 520px); text-align:center; z-index:50;
+  }
+  .toast.show{ opacity:1; transform:translate(-50%, 0); }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; animation:none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round">
+          <line x1="4"  y1="9.5" x2="4"  y2="14.5"/>
+          <line x1="8"  y1="6.5" x2="8"  y2="17.5"/>
+          <line x1="12" y1="4"   x2="12" y2="20"/>
+          <line x1="16" y1="7.5" x2="16" y2="16.5"/>
+          <line x1="20" y1="10"  x2="20" y2="14"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Splitter MP3</h1>
+        <p>Corta y une audio sin salir del navegador</p>
+      </div>
+    </div>
+
+    <div class="seg" id="themeSeg" role="group" aria-label="Apariencia">
+      <div class="pill" id="themePill"></div>
+      <button type="button" data-theme-opt="light" aria-pressed="false" title="Modo claro">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span>Claro</span>
+      </button>
+      <button type="button" data-theme-opt="dark" aria-pressed="false" title="Modo oscuro">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <span>Oscuro</span>
+      </button>
+      <button type="button" data-theme-opt="system" aria-pressed="false" title="Seguir al sistema">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        <span>Sistema</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="tabs-row">
+    <div class="seg" id="tabSeg" role="tablist" aria-label="Herramientas">
+      <div class="pill" id="tabPill"></div>
+      <button type="button" role="tab" data-tab="cut"  aria-pressed="true"  aria-controls="panelCut">Cortar</button>
+      <button type="button" role="tab" data-tab="join" aria-pressed="false" aria-controls="panelJoin">Unir</button>
+    </div>
+  </div>
+
+  <!-- ================= CORTAR ================= -->
+  <section class="panel active" id="panelCut" role="tabpanel">
+    <div class="card">
+
+      <div class="dropzone" id="dzCut" tabindex="0" role="button" aria-label="Elegir archivo de audio para cortar">
+        <div class="dz-icon">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8.1 8.1 20 20M20 4 8.1 15.9"/></svg>
+        </div>
+        <h3>Arrastra tu archivo de audio aquí</h3>
+        <p>o haz clic para elegirlo desde tu equipo</p>
+        <div class="formats">MP3 · WAV · M4A · AAC · OGG · OPUS · FLAC · AIFF · WMA</div>
+      </div>
+      <input type="file" id="fileCut" accept=".mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.aiff,.aif,.wma,audio/*" hidden>
+
+      <div id="editor" hidden>
+        <div class="file-row">
+          <span class="badge" id="fmtBadge">MP3</span>
+          <div>
+            <div class="file-name" id="fName">archivo.mp3</div>
+            <div class="file-meta" id="fMeta">—</div>
+          </div>
+          <button type="button" class="link-btn" id="changeFile">Cambiar archivo</button>
+        </div>
+
+        <div class="trim-shell">
+          <div class="wave-box" id="waveBox">
+            <canvas id="waveCanvas"></canvas>
+            <div class="dim-left"  id="dimL"></div>
+            <div class="dim-right" id="dimR"></div>
+            <div class="playhead"  id="playhead"></div>
+            <div class="sel-frame" id="selFrame" title="Arrastra para mover la selección"></div>
+            <button type="button" class="handle left"  id="hL" role="slider" aria-label="Inicio del recorte" aria-valuemin="0" aria-valuenow="0">
+              <svg viewBox="0 0 8 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 2 2 8l4 6"/></svg>
+            </button>
+            <button type="button" class="handle right" id="hR" role="slider" aria-label="Fin del recorte" aria-valuemin="0" aria-valuenow="0">
+              <svg viewBox="0 0 8 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l4 6-4 6"/></svg>
+            </button>
+            <div class="time-tag" id="tagL">0:00.0</div>
+            <div class="time-tag" id="tagR">0:00.0</div>
+          </div>
+          <div class="ruler"><span>0:00</span><span id="rulerMid">—</span><span id="rulerEnd">—</span></div>
+        </div>
+
+        <div class="transport">
+          <button type="button" class="play-btn" id="playBtn" aria-label="Reproducir la selección">
+            <svg id="icoPlay" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.54.84l10-6.5a1 1 0 0 0 0-1.68l-10-6.5A1 1 0 0 0 8 5.5z"/></svg>
+            <svg id="icoPause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
+          </button>
+          <div class="readouts">
+            <div class="readout"><div class="lbl">Inicio</div><div class="val" id="roStart">0:00.0</div></div>
+            <div class="readout"><div class="lbl">Fin</div><div class="val" id="roEnd">0:00.0</div></div>
+            <div class="readout"><div class="lbl">Selección</div><div class="val acc" id="roDur">0:00.0</div></div>
+          </div>
+        </div>
+
+        <div class="time-grid">
+          <div class="time-field">
+            <span class="lbl">Inicio del recorte</span>
+            <div class="hms">
+              <input type="number" id="sH" min="0" max="99" step="1" value="0" inputmode="numeric" aria-label="Horas de inicio">
+              <span class="sep">:</span>
+              <input type="number" id="sM" min="0" max="59" step="1" value="0" inputmode="numeric" aria-label="Minutos de inicio">
+              <span class="sep">:</span>
+              <input type="number" id="sS" min="0" max="59.9" step="0.1" value="0" inputmode="decimal" aria-label="Segundos de inicio">
+            </div>
+            <div class="unit-caption"><span>horas</span><span class="sp"></span><span>min</span><span class="sp"></span><span>seg</span></div>
+          </div>
+          <div class="time-field">
+            <span class="lbl">Fin del recorte</span>
+            <div class="hms">
+              <input type="number" id="eH" min="0" max="99" step="1" value="0" inputmode="numeric" aria-label="Horas de fin">
+              <span class="sep">:</span>
+              <input type="number" id="eM" min="0" max="59" step="1" value="0" inputmode="numeric" aria-label="Minutos de fin">
+              <span class="sep">:</span>
+              <input type="number" id="eS" min="0" max="59.9" step="0.1" value="0" inputmode="decimal" aria-label="Segundos de fin">
+            </div>
+            <div class="unit-caption"><span>horas</span><span class="sp"></span><span>min</span><span class="sp"></span><span>seg</span></div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn-primary" id="btnCut">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            Exportar recorte
+          </button>
+          <div class="progress" id="progCut"><div class="bar" id="barCut"></div></div>
+        </div>
+        <div class="status-line" id="statCut"></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= UNIR ================= -->
+  <section class="panel" id="panelJoin" role="tabpanel">
+    <div class="card">
+
+      <div class="dropzone" id="dzJoin" tabindex="0" role="button" aria-label="Elegir archivos de audio para unir">
+        <div class="dz-icon">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7h8M8 12h8M8 17h5"/><rect x="3" y="3" width="18" height="18" rx="4"/></svg>
+        </div>
+        <h3>Arrastra dos o más archivos aquí</h3>
+        <p>Se unirán en el orden de la lista · deben tener el mismo formato</p>
+        <div class="formats">MP3 · WAV · M4A · AAC · OGG · OPUS · FLAC · AIFF · WMA</div>
+      </div>
+      <input type="file" id="fileJoin" accept=".mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.aiff,.aif,.wma,audio/*" multiple hidden>
+
+      <div id="joinEditor" hidden>
+        <ul class="join-list" id="joinList"></ul>
+        <div class="warn" id="joinWarn">Los archivos tienen formatos distintos. Para unirlos sin pérdida deben compartir la misma extensión (por ejemplo, todos .mp3).</div>
+        <button type="button" class="add-more" id="addMore">＋ Añadir más archivos</button>
+
+        <div class="actions">
+          <button type="button" class="btn-primary" id="btnJoin">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            Exportar audio unido
+          </button>
+          <div class="progress" id="progJoin"><div class="bar" id="barJoin"></div></div>
+        </div>
+        <div class="status-line" id="statJoin"></div>
+      </div>
+
+    </div>
+  </section>
+
+  <footer>
+    Todo el procesamiento ocurre en tu navegador: tus archivos nunca se suben a ningún servidor.<br>
+    El recorte y la unión conservan el formato original del archivo.
+  </footer>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  'use strict';
+
+  /* ============ Utilidades ============ */
+  const $ = id => document.getElementById(id);
+  const clamp = (v,a,b) => Math.min(b, Math.max(a, v));
+
+  function fmtTime(t, withTenths){
+    t = Math.max(0, t || 0);
+    const h = Math.floor(t/3600), m = Math.floor((t%3600)/60);
+    const s = t % 60;
+    const sTxt = withTenths ? s.toFixed(1).padStart(4,'0') : String(Math.floor(s)).padStart(2,'0');
+    return (h>0 ? h + ':' + String(m).padStart(2,'0') : String(m)) + ':' + sTxt;
+  }
+  function fmtSize(bytes){
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(0) + ' KB';
+    return (bytes/1024/1024).toFixed(1) + ' MB';
+  }
+  function extOf(name){
+    const i = name.lastIndexOf('.');
+    return i >= 0 ? name.slice(i+1).toLowerCase() : '';
+  }
+  function baseOf(name){
+    const i = name.lastIndexOf('.');
+    return i >= 0 ? name.slice(0, i) : name;
+  }
+
+  let toastTimer = null;
+  function toast(msg){
+    const el = $('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3800);
+  }
+
+  /* ============ Tema (claro / oscuro / sistema) ============ */
+  const mql = window.matchMedia('(prefers-color-scheme: dark)');
+  function storedTheme(){
+    try { return localStorage.getItem('splitter-theme') || 'system'; } catch(e){ return 'system'; }
+  }
+  function saveTheme(v){
+    try { localStorage.setItem('splitter-theme', v); } catch(e){}
+  }
+  function applyTheme(pref){
+    const resolved = pref === 'system' ? (mql.matches ? 'dark' : 'light') : pref;
+    document.documentElement.dataset.theme = resolved;
+    const seg = $('themeSeg');
+    seg.querySelectorAll('button').forEach(b => {
+      b.setAttribute('aria-pressed', String(b.dataset.themeOpt === pref));
+    });
+    movePill($('themePill'), seg.querySelector('[aria-pressed="true"]'));
+    if (typeof drawWave === 'function') requestAnimationFrame(drawWave);
+  }
+  function movePill(pill, btn){
+    if (!btn) return;
+    pill.style.left  = btn.offsetLeft + 'px';
+    pill.style.width = btn.offsetWidth + 'px';
+  }
+  $('themeSeg').addEventListener('click', e => {
+    const b = e.target.closest('button[data-theme-opt]');
+    if (!b) return;
+    saveTheme(b.dataset.themeOpt);
+    applyTheme(b.dataset.themeOpt);
+  });
+  mql.addEventListener('change', () => { if (storedTheme() === 'system') applyTheme('system'); });
+
+  /* ============ Pestañas ============ */
+  $('tabSeg').addEventListener('click', e => {
+    const b = e.target.closest('button[data-tab]');
+    if (!b) return;
+    $('tabSeg').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    movePill($('tabPill'), b);
+    $('panelCut').classList.toggle('active',  b.dataset.tab === 'cut');
+    $('panelJoin').classList.toggle('active', b.dataset.tab === 'join');
+  });
+
+  window.addEventListener('resize', () => {
+    movePill($('themePill'), $('themeSeg').querySelector('[aria-pressed="true"]'));
+    movePill($('tabPill'),   $('tabSeg').querySelector('[aria-pressed="true"]'));
+    resizeCanvas();
+  });
+
+  /* ============ ffmpeg.wasm (núcleo de un solo hilo, apto para GitHub Pages) ============ */
+  const FF_LIB = [
+    'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js',
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js'
+  ];
+  const FF_CORE = [
+    'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js',
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
+  ];
+  let ffmpeg = null, ffLoading = null;
+
+  function loadScript(src){
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = () => res();
+      s.onerror = () => rej(new Error('No se pudo cargar ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  async function loadAny(list){
+    let lastErr;
+    for (const src of list){
+      try { await loadScript(src); return; } catch(e){ lastErr = e; }
+    }
+    throw lastErr;
+  }
+  async function getFFmpeg(onStatus){
+    if (ffmpeg && ffmpeg.isLoaded()) return ffmpeg;
+    if (ffLoading) return ffLoading;
+    ffLoading = (async () => {
+      onStatus && onStatus('Preparando el motor de audio (solo la primera vez)…');
+      if (!window.FFmpeg) await loadAny(FF_LIB);
+      let lastErr;
+      for (const core of FF_CORE){
+        try {
+          const inst = window.FFmpeg.createFFmpeg({ log:false, corePath: core, mainName:'main' });
+          await inst.load();
+          ffmpeg = inst;
+          return ffmpeg;
+        } catch(e){ lastErr = e; }
+      }
+      throw lastErr || new Error('No se pudo iniciar ffmpeg');
+    })();
+    try { return await ffLoading; }
+    finally { ffLoading = null; }
+  }
+  function ffCleanup(names){
+    if (!ffmpeg) return;
+    names.forEach(n => { try { ffmpeg.FS('unlink', n); } catch(e){} });
+  }
+  function downloadBytes(bytes, filename, mime){
+    const blob = new Blob([bytes.buffer ? bytes : new Uint8Array(bytes)], { type: mime || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+  const MIMES = { mp3:'audio/mpeg', wav:'audio/wav', m4a:'audio/mp4', aac:'audio/aac',
+                  ogg:'audio/ogg', oga:'audio/ogg', opus:'audio/ogg', flac:'audio/flac',
+                  aiff:'audio/aiff', aif:'audio/aiff', wma:'audio/x-ms-wma' };
+
+  /* ============ CORTAR: estado ============ */
+  let cutFile = null;        // File original
+  let audioBuf = null;       // AudioBuffer decodificado (para onda y preview)
+  let peaks = null;          // picos precalculados
+  let duration = 0;          // segundos
+  let selStart = 0, selEnd = 0;
+  let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
+
+  const waveBox = $('waveBox'), canvas = $('waveCanvas'), ctx2d = canvas.getContext('2d');
+  const HANDLE_W = 22, MIN_GAP = 0.1;
+
+  /* ---- Carga de archivo ---- */
+  function bindDropzone(dz, input, onFiles){
+    dz.addEventListener('click', () => input.click());
+    dz.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    dz.addEventListener('drop', e => {
+      e.preventDefault(); dz.classList.remove('dragover');
+      if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+    });
+    input.addEventListener('change', () => {
+      if (input.files.length) onFiles(input.files);
+      input.value = '';
+    });
+  }
+
+  bindDropzone($('dzCut'), $('fileCut'), files => loadCutFile(files[0]));
+  $('changeFile').addEventListener('click', () => $('fileCut').click());
+
+  async function loadCutFile(file){
+    stopPreview();
+    cutFile = file;
+    audioBuf = null; peaks = null;
+
+    $('fName').textContent = file.name;
+    $('fmtBadge').textContent = (extOf(file.name) || 'audio').toUpperCase();
+    $('fMeta').textContent = fmtSize(file.size) + ' · decodificando…';
+    $('dzCut').hidden = true;
+    $('editor').hidden = false;
+    $('statCut').textContent = '';
+
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!audioCtx) audioCtx = new AC();
+      const buf = await file.arrayBuffer();
+      audioBuf = await audioCtx.decodeAudioData(buf);
+      duration = audioBuf.duration;
+      peaks = computePeaks(audioBuf, 1200);
+    } catch(err){
+      audioBuf = null; peaks = null; duration = 0;
+      toast('No se pudo generar la onda de este formato. Aún puedes cortar con los campos de tiempo.');
+    }
+
+    if (!duration) duration = 0;
+    selStart = 0;
+    selEnd = duration || 0;
+    $('fMeta').textContent = fmtSize(file.size) + (duration ? ' · ' + fmtTime(duration, true) : '');
+    $('rulerMid').textContent = duration ? fmtTime(duration/2, false) : '—';
+    $('rulerEnd').textContent = duration ? fmtTime(duration, false) : '—';
+    $('hL').setAttribute('aria-valuemax', String(duration));
+    $('hR').setAttribute('aria-valuemax', String(duration));
+
+    resizeCanvas();
+    syncAll('code');
+  }
+
+  function computePeaks(buffer, buckets){
+    const ch0 = buffer.getChannelData(0);
+    const ch1 = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
+    const per = Math.max(1, Math.floor(ch0.length / buckets));
+    const out = new Float32Array(buckets);
+    for (let i = 0; i < buckets; i++){
+      let max = 0;
+      const start = i * per, end = Math.min(ch0.length, start + per);
+      for (let j = start; j < end; j += 4){
+        let v = Math.abs(ch0[j]);
+        if (ch1) v = Math.max(v, Math.abs(ch1[j]));
+        if (v > max) max = v;
+      }
+      out[i] = max;
+    }
+    // normalizar suavemente
+    let peak = 0;
+    for (let i = 0; i < buckets; i++) if (out[i] > peak) peak = out[i];
+    if (peak > 0) for (let i = 0; i < buckets; i++) out[i] = out[i] / peak;
+    return out;
+  }
+
+  /* ---- Dibujo de la onda ---- */
+  function resizeCanvas(){
+    if ($('editor').hidden) return;
+    const r = waveBox.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width  = Math.round(r.width * dpr);
+    canvas.height = Math.round(r.height * dpr);
+    drawWave();
+    layoutSelection();
+  }
+
+  function cssVar(name){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function drawWave(){
+    const W = canvas.width, H = canvas.height;
+    ctx2d.clearRect(0, 0, W, H);
+    if (!W || !H) return;
+
+    const idle = cssVar('--wave-idle') || '#C9C9CE';
+    const acc  = cssVar('--accent') || '#E4640B';
+    const mid = H / 2;
+
+    if (!peaks){
+      // marcador plano cuando no hay onda decodificable
+      ctx2d.fillStyle = idle;
+      ctx2d.fillRect(0, mid - 1.5, W, 3);
+      return;
+    }
+    const n = peaks.length;
+    const step = W / n;
+    const barW = Math.max(1, step * 0.62);
+    const selA = duration ? (selStart / duration) * n : 0;
+    const selB = duration ? (selEnd   / duration) * n : n;
+
+    for (let i = 0; i < n; i++){
+      const amp = Math.max(0.025, peaks[i]) * (H * 0.42);
+      ctx2d.fillStyle = (i >= selA && i <= selB) ? acc : idle;
+      const x = i * step + (step - barW) / 2;
+      roundBar(ctx2d, x, mid - amp, barW, amp * 2);
+    }
+  }
+  function roundBar(c, x, y, w, h){
+    const r = Math.min(w / 2, 2 * (window.devicePixelRatio || 1));
+    c.beginPath();
+    c.moveTo(x, y + r);
+    c.arcTo(x, y, x + w, y, r);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.closePath();
+    c.fill();
+  }
+
+  /* ---- Selección: asas, marco y etiquetas ---- */
+  function layoutSelection(){
+    const w = waveBox.clientWidth;
+    if (!w) return;
+    const d = duration || 1;
+    const xL = (selStart / d) * w;
+    const xR = (selEnd   / d) * w;
+
+    $('dimL').style.left = '0px';
+    $('dimL').style.width = Math.max(0, xL) + 'px';
+    $('dimR').style.left  = xR + 'px';
+    $('dimR').style.width = Math.max(0, w - xR) + 'px';
+
+    $('selFrame').style.left  = xL + 'px';
+    $('selFrame').style.width = Math.max(0, xR - xL) + 'px';
+
+    $('hL').style.left = clamp(xL - HANDLE_W, -HANDLE_W, w) + 'px';
+    $('hR').style.left = clamp(xR, 0, w) + 'px';
+
+    const tagL = $('tagL'), tagR = $('tagR');
+    tagL.style.left = clamp(xL, 26, w - 26) + 'px';
+    tagR.style.left = clamp(xR, 26, w - 26) + 'px';
+    tagL.textContent = fmtTime(selStart, true);
+    tagR.textContent = fmtTime(selEnd, true);
+    if (Math.abs(xR - xL) < 92){ tagL.style.top = '-58px'; } else { tagL.style.top = '-34px'; }
+
+    $('hL').setAttribute('aria-valuenow', selStart.toFixed(1));
+    $('hR').setAttribute('aria-valuenow', selEnd.toFixed(1));
+  }
+
+  function setSelection(a, b, source){
+    if (!duration) { selStart = a; selEnd = b; }
+    else {
+      a = clamp(a, 0, duration);
+      b = clamp(b, 0, duration);
+      if (b - a < MIN_GAP){
+        if (source === 'left')  a = b - MIN_GAP;
+        else                    b = a + MIN_GAP;
+        a = clamp(a, 0, duration); b = clamp(b, 0, duration);
+      }
+      selStart = a; selEnd = b;
+    }
+    syncAll(source);
+  }
+
+  function syncAll(source){
+    $('roStart').textContent = fmtTime(selStart, true);
+    $('roEnd').textContent   = fmtTime(selEnd, true);
+    $('roDur').textContent   = fmtTime(Math.max(0, selEnd - selStart), true);
+    if (source !== 'inputs'){
+      writeHMS('s', selStart);
+      writeHMS('e', selEnd);
+    }
+    layoutSelection();
+    requestAnimationFrame(drawWave);
+  }
+
+  function writeHMS(prefix, t){
+    $(prefix + 'H').value = Math.floor(t / 3600);
+    $(prefix + 'M').value = Math.floor((t % 3600) / 60);
+    $(prefix + 'S').value = (Math.round((t % 60) * 10) / 10);
+  }
+  function readHMS(prefix){
+    const h = parseFloat($(prefix + 'H').value) || 0;
+    const m = parseFloat($(prefix + 'M').value) || 0;
+    const s = parseFloat($(prefix + 'S').value) || 0;
+    return Math.max(0, h * 3600 + m * 60 + s);
+  }
+  ['sH','sM','sS','eH','eM','eS'].forEach(id => {
+    $(id).addEventListener('change', () => {
+      let a = readHMS('s'), b = readHMS('e');
+      if (duration){ a = clamp(a, 0, duration); b = clamp(b, 0, duration); }
+      if (b <= a) b = a + MIN_GAP;
+      selStart = a; selEnd = duration ? clamp(b, 0, duration) : b;
+      syncAll('inputs');
+      writeHMS('s', selStart); writeHMS('e', selEnd);
+    });
+  });
+
+  /* ---- Arrastre de asas y del marco ---- */
+  function timeAtClientX(clientX){
+    const r = waveBox.getBoundingClientRect();
+    return clamp((clientX - r.left) / r.width, 0, 1) * (duration || 0);
+  }
+  function dragHandle(el, side){
+    el.addEventListener('pointerdown', e => {
+      if (!duration) return;
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const move = ev => {
+        const t = timeAtClientX(ev.clientX);
+        if (side === 'left')  setSelection(Math.min(t, selEnd - MIN_GAP), selEnd, 'left');
+        else                  setSelection(selStart, Math.max(t, selStart + MIN_GAP), 'right');
+      };
+      const up = ev => {
+        el.releasePointerCapture(e.pointerId);
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+      };
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+    el.addEventListener('keydown', e => {
+      if (!duration) return;
+      const fine = e.shiftKey ? 1 : 0.1;
+      let d = 0;
+      if (e.key === 'ArrowLeft')  d = -fine;
+      if (e.key === 'ArrowRight') d =  fine;
+      if (!d) return;
+      e.preventDefault();
+      if (side === 'left')  setSelection(selStart + d, selEnd, 'left');
+      else                  setSelection(selStart, selEnd + d, 'right');
+    });
+  }
+  dragHandle($('hL'), 'left');
+  dragHandle($('hR'), 'right');
+
+  $('selFrame').addEventListener('pointerdown', e => {
+    if (!duration) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const t0 = timeAtClientX(e.clientX);
+    const a0 = selStart, b0 = selEnd, len = selEnd - selStart;
+    const move = ev => {
+      const dt = timeAtClientX(ev.clientX) - t0;
+      let a = clamp(a0 + dt, 0, duration - len);
+      setSelection(a, a + len, 'frame');
+    };
+    const up = () => {
+      el.releasePointerCapture(e.pointerId);
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+
+  /* ---- Vista previa ---- */
+  function stopPreview(){
+    if (playingSrc){ try { playingSrc.stop(); } catch(e){} playingSrc = null; }
+    cancelAnimationFrame(rafId);
+    $('playhead').style.display = 'none';
+    $('icoPlay').style.display = '';
+    $('icoPause').style.display = 'none';
+  }
+  $('playBtn').addEventListener('click', async () => {
+    if (playingSrc){ stopPreview(); return; }
+    if (!audioBuf){ toast('La vista previa no está disponible para este formato.'); return; }
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(audioCtx.destination);
+    const len = Math.max(0.05, selEnd - selStart);
+    src.start(0, selStart, len);
+    playingSrc = src;
+    playT0 = audioCtx.currentTime;
+    playFrom = selStart;
+    $('icoPlay').style.display = 'none';
+    $('icoPause').style.display = '';
+    $('playhead').style.display = 'block';
+    src.onended = () => { if (playingSrc === src) stopPreview(); };
+    const tick = () => {
+      if (!playingSrc) return;
+      const t = playFrom + (audioCtx.currentTime - playT0);
+      const w = waveBox.clientWidth;
+      $('playhead').style.left = clamp((t / duration) * w, 0, w) + 'px';
+      if (t >= selEnd) { stopPreview(); return; }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+  });
+
+  /* ---- Exportar recorte ---- */
+  $('btnCut').addEventListener('click', async () => {
+    if (!cutFile) return;
+    const a = selStart, b = selEnd;
+    if (!(b > a)){ toast('El fin del recorte debe ser mayor que el inicio.'); return; }
+    stopPreview();
+
+    const ext = extOf(cutFile.name) || 'mp3';
+    const inName = 'input.' + ext, outName = 'output.' + ext;
+    const btn = $('btnCut'), prog = $('progCut'), bar = $('barCut'), stat = $('statCut');
+    btn.disabled = true; prog.style.display = 'block'; bar.style.width = '0%';
+
+    try {
+      const ff = await getFFmpeg(msg => stat.textContent = msg);
+      ff.setProgress(({ ratio }) => {
+        if (ratio >= 0 && ratio <= 1) bar.style.width = Math.round(ratio * 100) + '%';
+      });
+      stat.textContent = 'Cortando…';
+      ff.FS('writeFile', inName, await window.FFmpeg.fetchFile(cutFile));
+
+      const ss = a.toFixed(3), dur = (b - a).toFixed(3);
+      let data = null;
+      // 1) sin recodificar: conserva el formato y la calidad originales
+      try {
+        await ff.run('-ss', ss, '-i', inName, '-t', dur, '-c', 'copy', outName);
+        data = ff.FS('readFile', outName);
+      } catch(e){ data = null; }
+      // 2) respaldo: recodificar en el mismo contenedor
+      if (!data || !data.length){
+        try { ff.FS('unlink', outName); } catch(e){}
+        await ff.run('-ss', ss, '-i', inName, '-t', dur, outName);
+        data = ff.FS('readFile', outName);
+      }
+      if (!data || !data.length) throw new Error('salida vacía');
+      downloadBytes(data, baseOf(cutFile.name) + ' (recorte).' + ext, MIMES[ext]);
+      bar.style.width = '100%';
+      stat.textContent = 'Listo: se descargó el recorte (' + fmtTime(b - a, true) + ').';
+      ffCleanup([inName, outName]);
+    } catch(err){
+      stat.textContent = '';
+      toast('No se pudo exportar el recorte. Revisa tu conexión (el motor se descarga la primera vez) e inténtalo de nuevo.');
+      ffCleanup([inName, outName]);
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => { prog.style.display = 'none'; }, 1200);
+    }
+  });
+
+  /* ============ UNIR ============ */
+  let joinFiles = [];
+
+  bindDropzone($('dzJoin'), $('fileJoin'), files => {
+    joinFiles = joinFiles.concat(Array.from(files));
+    renderJoin();
+  });
+  $('addMore').addEventListener('click', () => $('fileJoin').click());
+
+  function renderJoin(){
+    const has = joinFiles.length > 0;
+    $('dzJoin').hidden = has;
+    $('joinEditor').hidden = !has;
+    if (!has) return;
+
+    const list = $('joinList');
+    list.innerHTML = '';
+    joinFiles.forEach((f, i) => {
+      const li = document.createElement('li');
+      li.className = 'join-item';
+
+      const num = document.createElement('span');
+      num.className = 'num'; num.textContent = i + 1;
+
+      const nm = document.createElement('span');
+      nm.className = 'jname'; nm.textContent = f.name; nm.title = f.name;
+
+      const meta = document.createElement('span');
+      meta.className = 'jmeta'; meta.textContent = fmtSize(f.size);
+
+      li.appendChild(num); li.appendChild(nm); li.appendChild(meta);
+      li.appendChild(iconBtn('Subir', 'M12 19V5M5 12l7-7 7 7', i === 0, () => { swap(i, i-1); }));
+      li.appendChild(iconBtn('Bajar', 'M12 5v14M19 12l-7 7-7-7', i === joinFiles.length - 1, () => { swap(i, i+1); }));
+      li.appendChild(iconBtn('Quitar', 'M6 6l12 12M18 6L6 18', false, () => { joinFiles.splice(i,1); renderJoin(); }));
+      list.appendChild(li);
+    });
+
+    const exts = new Set(joinFiles.map(f => extOf(f.name)));
+    $('joinWarn').style.display = exts.size > 1 ? 'block' : 'none';
+    $('btnJoin').disabled = joinFiles.length < 2 || exts.size > 1;
+  }
+  function iconBtn(label, path, disabled, onClick){
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'icon-btn'; b.title = label; b.setAttribute('aria-label', label);
+    b.disabled = disabled;
+    b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+  function swap(i, j){
+    const t = joinFiles[i]; joinFiles[i] = joinFiles[j]; joinFiles[j] = t;
+    renderJoin();
+  }
+
+  $('btnJoin').addEventListener('click', async () => {
+    if (joinFiles.length < 2) return;
+    const ext = extOf(joinFiles[0].name) || 'mp3';
+    const btn = $('btnJoin'), prog = $('progJoin'), bar = $('barJoin'), stat = $('statJoin');
+    btn.disabled = true; prog.style.display = 'block'; bar.style.width = '0%';
+    const names = [];
+
+    try {
+      const ff = await getFFmpeg(msg => stat.textContent = msg);
+      ff.setProgress(({ ratio }) => {
+        if (ratio >= 0 && ratio <= 1) bar.style.width = Math.round(ratio * 100) + '%';
+      });
+      stat.textContent = 'Uniendo ' + joinFiles.length + ' archivos…';
+
+      for (let i = 0; i < joinFiles.length; i++){
+        const n = 'part' + i + '.' + ext;
+        ff.FS('writeFile', n, await window.FFmpeg.fetchFile(joinFiles[i]));
+        names.push(n);
+      }
+      const listTxt = names.map(n => "file '" + n + "'").join('\n');
+      ff.FS('writeFile', 'list.txt', new TextEncoder().encode(listTxt));
+      const outName = 'joined.' + ext;
+      names.push('list.txt', outName);
+
+      let data = null;
+      try {
+        await ff.run('-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', outName);
+        data = ff.FS('readFile', outName);
+      } catch(e){ data = null; }
+      if (!data || !data.length){
+        try { ff.FS('unlink', outName); } catch(e){}
+        await ff.run('-f', 'concat', '-safe', '0', '-i', 'list.txt', outName);
+        data = ff.FS('readFile', outName);
+      }
+      if (!data || !data.length) throw new Error('salida vacía');
+      const base = baseOf(joinFiles[0].name);
+      downloadBytes(data, base + ' (unido).' + ext, MIMES[ext]);
+      bar.style.width = '100%';
+      stat.textContent = 'Listo: se descargó el archivo unido.';
+      ffCleanup(names);
+    } catch(err){
+      stat.textContent = '';
+      toast('No se pudo unir los archivos. Verifica que compartan el mismo formato e inténtalo de nuevo.');
+      ffCleanup(names);
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => { prog.style.display = 'none'; }, 1200);
+    }
+  });
+
+  /* ============ Arranque ============ */
+  applyTheme(storedTheme());
+  movePill($('tabPill'), $('tabSeg').querySelector('[aria-pressed="true"]'));
+  // recolocar píldoras cuando las fuentes terminan de cargar
+  window.addEventListener('load', () => {
+    applyTheme(storedTheme());
+    movePill($('tabPill'), $('tabSeg').querySelector('[aria-pressed="true"]'));
+  });
+})();
+</script>
+</body>
+</html>
