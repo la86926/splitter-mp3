@@ -59,6 +59,7 @@
     background:var(--bg);
     color:var(--text);
     min-height:100vh;
+    overflow-x:hidden;
     -webkit-font-smoothing:antialiased;
     transition:background var(--dur) ease, color var(--dur) ease;
   }
@@ -150,7 +151,8 @@
     color:var(--accent-strong); background:var(--accent-soft);
     padding:4px 9px; border-radius:6px; text-transform:uppercase;
   }
-  .file-name{ font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:min(46ch, 100%); }
+  .file-info{ min-width:0; flex:1 1 auto; }
+  .file-name{ font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
   .file-meta{ font-size:12.5px; color:var(--text-2); }
   .link-btn{
     margin-left:auto; border:0; background:none; color:var(--accent);
@@ -196,6 +198,7 @@
     padding:3px 8px; border-radius:7px; white-space:nowrap; pointer-events:none;
     transition:opacity var(--dur) ease;
   }
+  .time-tag.pos{ background:var(--accent); color:#fff; }
   .playhead{
     position:absolute; top:0; bottom:0; width:2px; background:var(--text);
     border-radius:2px; pointer-events:none; display:none;
@@ -221,9 +224,26 @@
   .play-btn:active{ transform:scale(.96); }
   .play-btn svg{ width:20px; height:20px; }
   .readouts{ display:flex; gap:26px; flex-wrap:wrap; }
+  @media (max-width:560px){
+    .readouts{ gap:14px; }
+    .readout .val{ font-size:16px; }
+  }
   .readout .lbl{ font-size:11px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--text-3); }
   .readout .val{ font-size:19px; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.01em; margin-top:2px; }
   .readout .val.acc{ color:var(--accent-strong); }
+
+  .zoom-btn{
+    width:44px; height:44px; border-radius:50%; border:1px solid var(--border);
+    background:var(--surface-2); color:var(--text-2); flex:none;
+    display:grid; place-items:center; margin-left:auto;
+    transition:background var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease, transform .15s ease;
+  }
+  .zoom-btn:hover{ transform:scale(1.05); }
+  .zoom-btn[aria-pressed="true"]{
+    background:var(--accent); border-color:var(--accent); color:#fff;
+    box-shadow:0 4px 12px rgba(228,100,11,.32);
+  }
+  .zoom-btn svg{ width:18px; height:18px; }
 
   /* Entradas de tiempo */
   .time-grid{
@@ -293,7 +313,7 @@
     display:grid; place-items:center; font-size:12.5px; font-weight:700;
     font-variant-numeric:tabular-nums;
   }
-  .join-item .jname{ font-size:13.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .join-item .jname{ font-size:13.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
   .join-item .jmeta{ font-size:11.5px; color:var(--text-3); flex:none; }
   .icon-btn{
     width:30px; height:30px; border-radius:8px; border:0; flex:none;
@@ -403,7 +423,7 @@
       <div id="editor" hidden>
         <div class="file-row">
           <span class="badge" id="fmtBadge">MP3</span>
-          <div>
+          <div class="file-info">
             <div class="file-name" id="fName">archivo.mp3</div>
             <div class="file-meta" id="fMeta">—</div>
           </div>
@@ -425,8 +445,9 @@
             </button>
             <div class="time-tag" id="tagL">0:00.0</div>
             <div class="time-tag" id="tagR">0:00.0</div>
+            <div class="time-tag pos" id="tagP" style="display:none">0:00.0</div>
           </div>
-          <div class="ruler"><span>0:00</span><span id="rulerMid">—</span><span id="rulerEnd">—</span></div>
+          <div class="ruler"><span id="rulerStart">0:00</span><span id="rulerMid">—</span><span id="rulerEnd">—</span></div>
         </div>
 
         <div class="transport">
@@ -435,10 +456,15 @@
             <svg id="icoPause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
           </button>
           <div class="readouts">
+            <div class="readout"><div class="lbl">Posición</div><div class="val" id="roPos">0:00.0</div></div>
             <div class="readout"><div class="lbl">Inicio</div><div class="val" id="roStart">0:00.0</div></div>
             <div class="readout"><div class="lbl">Fin</div><div class="val" id="roEnd">0:00.0</div></div>
             <div class="readout"><div class="lbl">Selección</div><div class="val acc" id="roDur">0:00.0</div></div>
           </div>
+          <button type="button" class="zoom-btn" id="zoomBtn" aria-pressed="false" title="Acercar a la selección">
+            <svg id="icoZin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg>
+            <svg id="icoZout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6"/></svg>
+          </button>
         </div>
 
         <div class="time-grid">
@@ -668,11 +694,15 @@
 
   /* ============ CORTAR: estado ============ */
   let cutFile = null;        // File original
-  let audioBuf = null;       // AudioBuffer decodificado (para onda y preview)
-  let peaks = null;          // picos precalculados
+  let audioBuf = null;       // AudioBuffer decodificado (para onda y respaldo de preview)
+  let peaks = null;          // picos de todo el archivo
+  let dispPeaks = null;      // picos de la ventana visible (cambia con el zoom)
   let duration = 0;          // segundos
   let selStart = 0, selEnd = 0;
+  let viewA = 0, viewB = 0;  // ventana visible de la onda
+  let zoomOn = false;
   let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
+  let previewEl = null, previewURL = null, playMode = null; // 'el' (elemento <audio>) | 'wa' (Web Audio)
 
   const waveBox = $('waveBox'), canvas = $('waveCanvas'), ctx2d = canvas.getContext('2d');
   const HANDLE_W = 22, MIN_GAP = 0.1;
@@ -699,7 +729,17 @@
   async function loadCutFile(file){
     stopPreview();
     cutFile = file;
-    audioBuf = null; peaks = null;
+    audioBuf = null; peaks = null; dispPeaks = null;
+
+    // elemento <audio>: suena incluso con el interruptor de silencio del iPhone/iPad
+    if (previewURL){ URL.revokeObjectURL(previewURL); previewURL = null; }
+    if (!previewEl){
+      previewEl = new Audio();
+      previewEl.preload = 'metadata';
+      previewEl.setAttribute('playsinline', '');
+    }
+    previewURL = URL.createObjectURL(file);
+    previewEl.src = previewURL;
 
     $('fName').textContent = file.name;
     $('fmtBadge').textContent = (extOf(file.name) || 'audio').toUpperCase();
@@ -707,6 +747,7 @@
     $('dzCut').hidden = true;
     $('editor').hidden = false;
     $('statCut').textContent = '';
+    $('roPos').textContent = '0:00.0';
 
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
@@ -714,34 +755,56 @@
       const buf = await file.arrayBuffer();
       audioBuf = await audioCtx.decodeAudioData(buf);
       duration = audioBuf.duration;
-      peaks = computePeaks(audioBuf, 1200);
+      peaks = computePeaksRange(audioBuf, 0, duration, 1200);
     } catch(err){
       audioBuf = null; peaks = null; duration = 0;
-      toast('No se pudo generar la onda de este formato. Aún puedes cortar con los campos de tiempo.');
+      const d = await metaDuration(previewEl);
+      if (d > 0) duration = d;
+      toast('No se pudo generar la onda de este formato. Aún puedes escucharlo y cortar con los campos de tiempo.');
     }
 
     if (!duration) duration = 0;
     selStart = 0;
     selEnd = duration || 0;
     $('fMeta').textContent = fmtSize(file.size) + (duration ? ' · ' + fmtTime(duration, true) : '');
-    $('rulerMid').textContent = duration ? fmtTime(duration/2, false) : '—';
-    $('rulerEnd').textContent = duration ? fmtTime(duration, false) : '—';
     $('hL').setAttribute('aria-valuemax', String(duration));
     $('hR').setAttribute('aria-valuemax', String(duration));
 
+    setZoom(false);
     resizeCanvas();
     syncAll('code');
   }
 
-  function computePeaks(buffer, buckets){
+  function metaDuration(el){
+    return new Promise(res => {
+      if (el.readyState >= 1 && isFinite(el.duration)) return res(el.duration);
+      const t = setTimeout(fail, 4000);
+      function cleanup(){
+        el.removeEventListener('loadedmetadata', done);
+        el.removeEventListener('error', fail);
+        clearTimeout(t);
+      }
+      function done(){ cleanup(); res(isFinite(el.duration) ? el.duration : 0); }
+      function fail(){ cleanup(); res(0); }
+      el.addEventListener('loadedmetadata', done);
+      el.addEventListener('error', fail);
+    });
+  }
+
+  function computePeaksRange(buffer, tA, tB, buckets){
     const ch0 = buffer.getChannelData(0);
     const ch1 = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
-    const per = Math.max(1, Math.floor(ch0.length / buckets));
+    const sr = buffer.sampleRate;
+    const i0 = Math.max(0, Math.floor(tA * sr));
+    const i1 = Math.min(ch0.length, Math.ceil(tB * sr));
+    const total = Math.max(1, i1 - i0);
+    const per = Math.max(1, Math.floor(total / buckets));
+    const stride = Math.max(1, Math.floor(per / 250));
     const out = new Float32Array(buckets);
     for (let i = 0; i < buckets; i++){
       let max = 0;
-      const start = i * per, end = Math.min(ch0.length, start + per);
-      for (let j = start; j < end; j += 4){
+      const s = i0 + i * per, e = Math.min(i1, s + per);
+      for (let j = s; j < e; j += stride){
         let v = Math.abs(ch0[j]);
         if (ch1) v = Math.max(v, Math.abs(ch1[j]));
         if (v > max) max = v;
@@ -753,6 +816,41 @@
     for (let i = 0; i < buckets; i++) if (out[i] > peak) peak = out[i];
     if (peak > 0) for (let i = 0; i < buckets; i++) out[i] = out[i] / peak;
     return out;
+  }
+
+  /* ---- Zoom sobre la selección ---- */
+  function viewSpan(){ return Math.max(0.001, viewB - viewA); }
+
+  function setZoom(on){
+    zoomOn = !!on && duration > 0;
+    $('zoomBtn').setAttribute('aria-pressed', String(zoomOn));
+    $('icoZin').style.display  = zoomOn ? 'none' : '';
+    $('icoZout').style.display = zoomOn ? '' : 'none';
+    if (zoomOn){
+      const len = Math.max(0.2, selEnd - selStart);
+      const pad = Math.max(0.5, len * 0.25);
+      viewA = clamp(selStart - pad, 0, duration);
+      viewB = clamp(selEnd + pad, 0, duration);
+      if (viewB - viewA < 0.4) viewB = clamp(viewA + 0.4, 0, duration);
+    } else {
+      viewA = 0;
+      viewB = duration;
+    }
+    updateDispPeaks();
+    updateRuler();
+    layoutSelection();
+    requestAnimationFrame(drawWave);
+  }
+  $('zoomBtn').addEventListener('click', () => setZoom(!zoomOn));
+
+  function updateDispPeaks(){
+    if (!audioBuf){ dispPeaks = null; return; }
+    dispPeaks = zoomOn ? computePeaksRange(audioBuf, viewA, viewB, 1200) : peaks;
+  }
+  function updateRuler(){
+    $('rulerStart').textContent = duration ? fmtTime(viewA, false) : '0:00';
+    $('rulerMid').textContent   = duration ? fmtTime(viewA + viewSpan()/2, false) : '—';
+    $('rulerEnd').textContent   = duration ? fmtTime(viewB, false) : '—';
   }
 
   /* ---- Dibujo de la onda ---- */
@@ -779,20 +877,21 @@
     const acc  = cssVar('--accent') || '#E4640B';
     const mid = H / 2;
 
-    if (!peaks){
+    if (!dispPeaks){
       // marcador plano cuando no hay onda decodificable
       ctx2d.fillStyle = idle;
       ctx2d.fillRect(0, mid - 1.5, W, 3);
       return;
     }
-    const n = peaks.length;
+    const n = dispPeaks.length;
     const step = W / n;
     const barW = Math.max(1, step * 0.62);
-    const selA = duration ? (selStart / duration) * n : 0;
-    const selB = duration ? (selEnd   / duration) * n : n;
+    const span = viewSpan();
+    const selA = duration ? ((selStart - viewA) / span) * n : 0;
+    const selB = duration ? ((selEnd   - viewA) / span) * n : n;
 
     for (let i = 0; i < n; i++){
-      const amp = Math.max(0.025, peaks[i]) * (H * 0.42);
+      const amp = Math.max(0.025, dispPeaks[i]) * (H * 0.42);
       ctx2d.fillStyle = (i >= selA && i <= selB) ? acc : idle;
       const x = i * step + (step - barW) / 2;
       roundBar(ctx2d, x, mid - amp, barW, amp * 2);
@@ -814,9 +913,9 @@
   function layoutSelection(){
     const w = waveBox.clientWidth;
     if (!w) return;
-    const d = duration || 1;
-    const xL = (selStart / d) * w;
-    const xR = (selEnd   / d) * w;
+    const span = viewSpan() || 1;
+    const xL = clamp(((selStart - viewA) / span) * w, 0, w);
+    const xR = clamp(((selEnd   - viewA) / span) * w, 0, w);
 
     $('dimL').style.left = '0px';
     $('dimL').style.width = Math.max(0, xL) + 'px';
@@ -843,12 +942,14 @@
   function setSelection(a, b, source){
     if (!duration) { selStart = a; selEnd = b; }
     else {
-      a = clamp(a, 0, duration);
-      b = clamp(b, 0, duration);
+      const lo = zoomOn ? viewA : 0;
+      const hi = zoomOn ? viewB : duration;
+      a = clamp(a, lo, hi);
+      b = clamp(b, lo, hi);
       if (b - a < MIN_GAP){
         if (source === 'left')  a = b - MIN_GAP;
         else                    b = a + MIN_GAP;
-        a = clamp(a, 0, duration); b = clamp(b, 0, duration);
+        a = clamp(a, lo, hi); b = clamp(b, lo, hi);
       }
       selStart = a; selEnd = b;
     }
@@ -884,6 +985,7 @@
       if (duration){ a = clamp(a, 0, duration); b = clamp(b, 0, duration); }
       if (b <= a) b = a + MIN_GAP;
       selStart = a; selEnd = duration ? clamp(b, 0, duration) : b;
+      if (zoomOn && (selStart < viewA - 0.001 || selEnd > viewB + 0.001)) setZoom(false);
       syncAll('inputs');
       writeHMS('s', selStart); writeHMS('e', selEnd);
     });
@@ -892,7 +994,7 @@
   /* ---- Arrastre de asas y del marco ---- */
   function timeAtClientX(clientX){
     const r = waveBox.getBoundingClientRect();
-    return clamp((clientX - r.left) / r.width, 0, 1) * (duration || 0);
+    return viewA + clamp((clientX - r.left) / r.width, 0, 1) * viewSpan();
   }
   function dragHandle(el, side){
     el.addEventListener('pointerdown', e => {
@@ -936,9 +1038,11 @@
     el.setPointerCapture(e.pointerId);
     const t0 = timeAtClientX(e.clientX);
     const a0 = selStart, b0 = selEnd, len = selEnd - selStart;
+    const lo = zoomOn ? viewA : 0;
+    const hi = zoomOn ? viewB : duration;
     const move = ev => {
       const dt = timeAtClientX(ev.clientX) - t0;
-      let a = clamp(a0 + dt, 0, duration - len);
+      let a = clamp(a0 + dt, lo, hi - len);
       setSelection(a, a + len, 'frame');
     };
     const up = () => {
@@ -954,34 +1058,72 @@
 
   /* ---- Vista previa ---- */
   function stopPreview(){
+    if (playMode === 'el' && previewEl){ try { previewEl.pause(); } catch(e){} }
     if (playingSrc){ try { playingSrc.stop(); } catch(e){} playingSrc = null; }
+    playMode = null;
     cancelAnimationFrame(rafId);
     $('playhead').style.display = 'none';
+    $('tagP').style.display = 'none';
     $('icoPlay').style.display = '';
     $('icoPause').style.display = 'none';
   }
+
+  function updatePlayheadUI(t){
+    const w = waveBox.clientWidth;
+    const x = clamp(((t - viewA) / viewSpan()) * w, 0, w);
+    $('playhead').style.left = x + 'px';
+    const tag = $('tagP');
+    tag.style.left = clamp(x, 30, w - 30) + 'px';
+    tag.textContent = fmtTime(t, true);
+    $('roPos').textContent = fmtTime(t, true);
+  }
+
   $('playBtn').addEventListener('click', async () => {
-    if (playingSrc){ stopPreview(); return; }
-    if (!audioBuf){ toast('La vista previa no está disponible para este formato.'); return; }
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    const src = audioCtx.createBufferSource();
-    src.buffer = audioBuf;
-    src.connect(audioCtx.destination);
-    const len = Math.max(0.05, selEnd - selStart);
-    src.start(0, selStart, len);
-    playingSrc = src;
-    playT0 = audioCtx.currentTime;
-    playFrom = selStart;
+    if (playMode){ stopPreview(); return; }
+    if (!(selEnd > selStart)){ toast('Ajusta primero el inicio y el fin del recorte.'); return; }
+
+    // 1) Elemento <audio>: reproduce aunque el dispositivo esté en modo silencio (iPhone/iPad)
+    let started = false;
+    if (previewEl && previewURL){
+      try {
+        if (previewEl.readyState < 1) await metaDuration(previewEl);
+        previewEl.currentTime = selStart;
+        previewEl.volume = 1;
+        await previewEl.play();
+        started = true; playMode = 'el';
+      } catch(e){
+        try { previewEl.pause(); } catch(_){}
+        started = false;
+      }
+    }
+    // 2) Respaldo con Web Audio si el navegador no reproduce ese formato en <audio>
+    if (!started && audioBuf){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      const src = audioCtx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(audioCtx.destination);
+      src.start(0, selStart, Math.max(0.05, selEnd - selStart));
+      playingSrc = src; playT0 = audioCtx.currentTime; playFrom = selStart;
+      src.onended = () => { if (playingSrc === src) stopPreview(); };
+      started = true; playMode = 'wa';
+    }
+    if (!started){ toast('La vista previa no está disponible para este formato.'); return; }
+
     $('icoPlay').style.display = 'none';
     $('icoPause').style.display = '';
     $('playhead').style.display = 'block';
-    src.onended = () => { if (playingSrc === src) stopPreview(); };
+    $('tagP').style.display = 'block';
+    updatePlayheadUI(selStart);
+
     const tick = () => {
-      if (!playingSrc) return;
-      const t = playFrom + (audioCtx.currentTime - playT0);
-      const w = waveBox.clientWidth;
-      $('playhead').style.left = clamp((t / duration) * w, 0, w) + 'px';
-      if (t >= selEnd) { stopPreview(); return; }
+      if (!playMode) return;
+      const t = playMode === 'el'
+        ? previewEl.currentTime
+        : playFrom + (audioCtx.currentTime - playT0);
+      updatePlayheadUI(t);
+      if (t >= selEnd - 0.02){ stopPreview(); return; }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
