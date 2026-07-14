@@ -201,8 +201,10 @@
   .time-tag.pos{ background:var(--accent); color:#fff; }
   .playhead{
     position:absolute; top:0; bottom:0; width:2px; background:var(--text);
-    border-radius:2px; pointer-events:none; display:none;
+    border-radius:2px; display:none; z-index:6;
+    pointer-events:auto; cursor:ew-resize; touch-action:none;
   }
+  .playhead::after{ content:''; position:absolute; top:0; bottom:0; left:-8px; right:-8px; }
 
   .ruler{
     display:flex; justify-content:space-between; margin-top:8px;
@@ -376,7 +378,7 @@
         </svg>
       </div>
       <div>
-        <h1>Splitter MP3 v1.1</h1>
+        <h1>Splitter MP3</h1>
         <p>Corta y une audio sin salir del navegador</p>
       </div>
     </div>
@@ -461,9 +463,8 @@
             <div class="readout"><div class="lbl">Fin</div><div class="val" id="roEnd">0:00.0</div></div>
             <div class="readout"><div class="lbl">Selección</div><div class="val acc" id="roDur">0:00.0</div></div>
           </div>
-          <button type="button" class="zoom-btn" id="zoomBtn" aria-pressed="false" title="Acercar a la selección">
-            <svg id="icoZin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg>
-            <svg id="icoZout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6"/></svg>
+          <button type="button" class="zoom-btn" id="btnToStart" title="Ir al inicio del recorte">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20 9 12l10-8v16z" fill="currentColor" stroke="none"/><line x1="5" y1="5" x2="5" y2="19"/></svg>
           </button>
         </div>
 
@@ -699,8 +700,8 @@
   let dispPeaks = null;      // picos de la ventana visible (cambia con el zoom)
   let duration = 0;          // segundos
   let selStart = 0, selEnd = 0;
-  let viewA = 0, viewB = 0;  // ventana visible de la onda
-  let zoomOn = false;
+  let viewA = 0, viewB = 0;  // ventana visible de la onda (zoom por pellizco)
+  let posCursor = 0;         // posición actual del cursor de reproducción
   let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
   let previewEl = null, previewURL = null, playMode = null; // 'el' (elemento <audio>) | 'wa' (Web Audio)
 
@@ -727,7 +728,7 @@
   $('changeFile').addEventListener('click', () => $('fileCut').click());
 
   async function loadCutFile(file){
-    stopPreview();
+    resetPreview();
     cutFile = file;
     audioBuf = null; peaks = null; dispPeaks = null;
 
@@ -770,9 +771,11 @@
     $('hL').setAttribute('aria-valuemax', String(duration));
     $('hR').setAttribute('aria-valuemax', String(duration));
 
-    setZoom(false);
+    posCursor = 0;
+    resetView();
     resizeCanvas();
     syncAll('code');
+    if (duration){ showCursorUI(); updatePlayheadUI(0); }
   }
 
   function metaDuration(el){
@@ -818,34 +821,36 @@
     return out;
   }
 
-  /* ---- Zoom sobre la selección ---- */
+  /* ---- Ventana de zoom (se controla con gestos, ver más abajo) ---- */
   function viewSpan(){ return Math.max(0.001, viewB - viewA); }
+  function isZoomed(){ return duration > 0 && viewSpan() < duration - 0.001; }
 
-  function setZoom(on){
-    zoomOn = !!on && duration > 0;
-    $('zoomBtn').setAttribute('aria-pressed', String(zoomOn));
-    $('icoZin').style.display  = zoomOn ? 'none' : '';
-    $('icoZout').style.display = zoomOn ? '' : 'none';
-    if (zoomOn){
-      const len = Math.max(0.2, selEnd - selStart);
-      const pad = Math.max(0.5, len * 0.25);
-      viewA = clamp(selStart - pad, 0, duration);
-      viewB = clamp(selEnd + pad, 0, duration);
-      if (viewB - viewA < 0.4) viewB = clamp(viewA + 0.4, 0, duration);
-    } else {
-      viewA = 0;
-      viewB = duration;
-    }
-    updateDispPeaks();
-    updateRuler();
-    layoutSelection();
-    requestAnimationFrame(drawWave);
+  function resetView(){
+    viewA = 0;
+    viewB = duration;
+    scheduleWave();
   }
-  $('zoomBtn').addEventListener('click', () => setZoom(!zoomOn));
 
+  let waveRaf = 0;
+  function scheduleWave(){
+    if (waveRaf) return;
+    waveRaf = requestAnimationFrame(() => {
+      waveRaf = 0;
+      updateDispPeaks();
+      updateRuler();
+      layoutSelection();
+      drawWave();
+      if (duration) updatePlayheadUI(currentPos());
+    });
+  }
+
+  let peakVA = -1, peakVB = -1;
   function updateDispPeaks(){
     if (!audioBuf){ dispPeaks = null; return; }
-    dispPeaks = zoomOn ? computePeaksRange(audioBuf, viewA, viewB, 1200) : peaks;
+    if (!isZoomed()){ dispPeaks = peaks; peakVA = 0; peakVB = duration; return; }
+    if (dispPeaks && dispPeaks !== peaks && Math.abs(peakVA - viewA) < 1e-6 && Math.abs(peakVB - viewB) < 1e-6) return;
+    dispPeaks = computePeaksRange(audioBuf, viewA, viewB, 1200);
+    peakVA = viewA; peakVB = viewB;
   }
   function updateRuler(){
     $('rulerStart').textContent = duration ? fmtTime(viewA, false) : '0:00';
@@ -914,21 +919,29 @@
     const w = waveBox.clientWidth;
     if (!w) return;
     const span = viewSpan() || 1;
-    const xL = clamp(((selStart - viewA) / span) * w, 0, w);
-    const xR = clamp(((selEnd   - viewA) / span) * w, 0, w);
+    const xLr = ((selStart - viewA) / span) * w;
+    const xRr = ((selEnd   - viewA) / span) * w;
+    const xL = clamp(xLr, 0, w);
+    const xR = clamp(xRr, 0, w);
 
     $('dimL').style.left = '0px';
-    $('dimL').style.width = Math.max(0, xL) + 'px';
+    $('dimL').style.width = xL + 'px';
     $('dimR').style.left  = xR + 'px';
     $('dimR').style.width = Math.max(0, w - xR) + 'px';
 
     $('selFrame').style.left  = xL + 'px';
     $('selFrame').style.width = Math.max(0, xR - xL) + 'px';
 
-    $('hL').style.left = clamp(xL - HANDLE_W, -HANDLE_W, w) + 'px';
-    $('hR').style.left = clamp(xR, 0, w) + 'px';
+    const showL = xLr > -26 && xLr < w + 26;
+    const showR = xRr > -26 && xRr < w + 26;
+    $('hL').style.display = showL ? '' : 'none';
+    $('hR').style.display = showR ? '' : 'none';
+    $('hL').style.left = clamp(xLr - HANDLE_W, -HANDLE_W, w) + 'px';
+    $('hR').style.left = clamp(xRr, 0, w) + 'px';
 
     const tagL = $('tagL'), tagR = $('tagR');
+    tagL.style.display = showL ? '' : 'none';
+    tagR.style.display = showR ? '' : 'none';
     tagL.style.left = clamp(xL, 26, w - 26) + 'px';
     tagR.style.left = clamp(xR, 26, w - 26) + 'px';
     tagL.textContent = fmtTime(selStart, true);
@@ -942,14 +955,12 @@
   function setSelection(a, b, source){
     if (!duration) { selStart = a; selEnd = b; }
     else {
-      const lo = zoomOn ? viewA : 0;
-      const hi = zoomOn ? viewB : duration;
-      a = clamp(a, lo, hi);
-      b = clamp(b, lo, hi);
+      a = clamp(a, 0, duration);
+      b = clamp(b, 0, duration);
       if (b - a < MIN_GAP){
         if (source === 'left')  a = b - MIN_GAP;
         else                    b = a + MIN_GAP;
-        a = clamp(a, lo, hi); b = clamp(b, lo, hi);
+        a = clamp(a, 0, duration); b = clamp(b, 0, duration);
       }
       selStart = a; selEnd = b;
     }
@@ -964,8 +975,8 @@
       writeHMS('s', selStart);
       writeHMS('e', selEnd);
     }
-    layoutSelection();
-    requestAnimationFrame(drawWave);
+    if (duration && !playMode) posCursor = clamp(posCursor, selStart, selEnd);
+    scheduleWave();
   }
 
   function writeHMS(prefix, t){
@@ -985,7 +996,7 @@
       if (duration){ a = clamp(a, 0, duration); b = clamp(b, 0, duration); }
       if (b <= a) b = a + MIN_GAP;
       selStart = a; selEnd = duration ? clamp(b, 0, duration) : b;
-      if (zoomOn && (selStart < viewA - 0.001 || selEnd > viewB + 0.001)) setZoom(false);
+      if (isZoomed() && (selStart < viewA - 0.001 || selEnd > viewB + 0.001)) resetView();
       syncAll('inputs');
       writeHMS('s', selStart); writeHMS('e', selEnd);
     });
@@ -1002,6 +1013,7 @@
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
       const move = ev => {
+        if (pinchActive) return;
         const t = timeAtClientX(ev.clientX);
         if (side === 'left')  setSelection(Math.min(t, selEnd - MIN_GAP), selEnd, 'left');
         else                  setSelection(selStart, Math.max(t, selStart + MIN_GAP), 'right');
@@ -1036,15 +1048,267 @@
     e.preventDefault();
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    let moved = false;
     const t0 = timeAtClientX(e.clientX);
-    const a0 = selStart, b0 = selEnd, len = selEnd - selStart;
-    const lo = zoomOn ? viewA : 0;
-    const hi = zoomOn ? viewB : duration;
+    const a0 = selStart, len = selEnd - selStart;
     const move = ev => {
+      if (pinchActive) return;
+      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
+      moved = true;
       const dt = timeAtClientX(ev.clientX) - t0;
-      let a = clamp(a0 + dt, lo, hi - len);
+      const a = clamp(a0 + dt, 0, duration - len);
       setSelection(a, a + len, 'frame');
     };
+    const up = ev => {
+      el.releasePointerCapture(e.pointerId);
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      // toque sin arrastre: ubicar el cursor de reproducción en ese punto
+      if (!moved && !pinchActive && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+
+  /* ---- Gestos sobre la onda: pellizco = zoom, arrastre = desplazar, toque = ubicar cursor ---- */
+  const MIN_SPAN = 0.3;               // zoom máximo: 0.3 s visibles
+  const pinchPts = new Map();
+  let pinchActive = false, pinch0 = null;
+
+  waveBox.addEventListener('pointerdown', e => {
+    if (!duration) return;
+    pinchPts.set(e.pointerId, e.clientX);
+    if (pinchPts.size === 2){
+      const ids = [...pinchPts.keys()];
+      const r = waveBox.getBoundingClientRect();
+      const fx = id => clamp((pinchPts.get(id) - r.left) / r.width, 0, 1);
+      pinch0 = {
+        i1: ids[0], i2: ids[1],
+        t1: viewA + fx(ids[0]) * viewSpan(),
+        t2: viewA + fx(ids[1]) * viewSpan()
+      };
+      pinchActive = true;
+    }
+  });
+  waveBox.addEventListener('pointermove', e => {
+    if (!pinchActive || !pinchPts.has(e.pointerId)) return;
+    pinchPts.set(e.pointerId, e.clientX);
+    if (!pinchPts.has(pinch0.i1) || !pinchPts.has(pinch0.i2)) return;
+    const r = waveBox.getBoundingClientRect();
+    let x1 = pinchPts.get(pinch0.i1) - r.left;
+    let x2 = pinchPts.get(pinch0.i2) - r.left;
+    let t1 = pinch0.t1, t2 = pinch0.t2;
+    if (x2 < x1){ const tx = x1; x1 = x2; x2 = tx; const tt = t1; t1 = t2; t2 = tt; }
+    if (x2 - x1 < 24 || t2 - t1 <= 0) return;
+    let span = clamp((t2 - t1) * r.width / (x2 - x1), MIN_SPAN, duration);
+    let a = clamp(t1 - (x1 / r.width) * span, 0, Math.max(0, duration - span));
+    viewA = a; viewB = a + span;
+    scheduleWave();
+  });
+  function pinchEnd(e){
+    pinchPts.delete(e.pointerId);
+    if (pinchPts.size < 2){ pinchActive = false; pinch0 = null; }
+  }
+  waveBox.addEventListener('pointerup', pinchEnd);
+  waveBox.addEventListener('pointercancel', pinchEnd);
+
+  // un dedo sobre la onda: arrastrar desplaza la vista (con zoom); un toque ubica el cursor
+  canvas.addEventListener('pointerdown', e => {
+    if (!duration) return;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    let lastX = e.clientX, moved = false;
+    const move = ev => {
+      if (pinchActive) return;
+      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
+      moved = true;
+      if (isZoomed()){
+        const r = waveBox.getBoundingClientRect();
+        const span = viewSpan();
+        const a = clamp(viewA + (lastX - ev.clientX) / r.width * span, 0, duration - span);
+        viewA = a; viewB = a + span;
+        scheduleWave();
+      }
+      lastX = ev.clientX;
+    };
+    const up = ev => {
+      canvas.releasePointerCapture(e.pointerId);
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', up);
+      canvas.removeEventListener('pointercancel', up);
+      if (!moved && !pinchActive && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
+    };
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+  });
+
+  // doble clic / doble toque: volver a la vista completa
+  canvas.addEventListener('dblclick', () => { if (duration) resetView(); });
+
+  // trackpad y ratón: pellizco del trackpad (ctrl+rueda) hace zoom; rueda desplaza cuando hay zoom
+  waveBox.addEventListener('wheel', e => {
+    if (!duration) return;
+    if (e.ctrlKey || e.metaKey){
+      e.preventDefault();
+      const r = waveBox.getBoundingClientRect();
+      const frac = clamp((e.clientX - r.left) / r.width, 0, 1);
+      const tAt = viewA + frac * viewSpan();
+      const span = clamp(viewSpan() * Math.exp(e.deltaY * 0.0028), MIN_SPAN, duration);
+      const a = clamp(tAt - frac * span, 0, Math.max(0, duration - span));
+      viewA = a; viewB = a + span;
+      scheduleWave();
+    } else if (isZoomed()){
+      e.preventDefault();
+      const r = waveBox.getBoundingClientRect();
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      const span = viewSpan();
+      const a = clamp(viewA + (delta / r.width) * span, 0, duration - span);
+      viewA = a; viewB = a + span;
+      scheduleWave();
+    }
+  }, { passive:false });
+
+  /* ---- Reproducción ---- */
+  function currentPos(){
+    if (playMode === 'el') return previewEl.currentTime;
+    if (playMode === 'wa') return playFrom + (audioCtx.currentTime - playT0);
+    return posCursor;
+  }
+  function showCursorUI(){
+    $('playhead').style.display = 'block';
+    $('tagP').style.display = 'block';
+  }
+  function updatePlayheadUI(t){
+    const w = waveBox.clientWidth;
+    const x = clamp(((t - viewA) / viewSpan()) * w, 0, w);
+    $('playhead').style.left = x + 'px';
+    const tag = $('tagP');
+    tag.style.left = clamp(x, 30, w - 30) + 'px';
+    tag.textContent = fmtTime(t, true);
+    $('roPos').textContent = fmtTime(t, true);
+  }
+
+  // Pausa: se detiene EXACTAMENTE donde va sonando; al reanudar continúa desde ahí
+  function pausePreview(){
+    if (!playMode) return;
+    posCursor = currentPos();
+    if (playMode === 'el'){
+      try { previewEl.pause(); } catch(e){}
+    } else {
+      const src = playingSrc; playingSrc = null;
+      if (src){ try { src.stop(); } catch(e){} }
+    }
+    playMode = null;
+    cancelAnimationFrame(rafId);
+    $('icoPlay').style.display = '';
+    $('icoPause').style.display = 'none';
+    updatePlayheadUI(posCursor);
+  }
+  // Reinicio total (solo al cargar otro archivo)
+  function resetPreview(){
+    pausePreview();
+    if (previewEl){ try { previewEl.pause(); } catch(e){} }
+    posCursor = 0;
+    $('playhead').style.display = 'none';
+    $('tagP').style.display = 'none';
+    $('roPos').textContent = '0:00.0';
+  }
+  // Al terminar la selección: pausa y el cursor vuelve al inicio del recorte
+  function finishPlayback(){
+    pausePreview();
+    posCursor = selStart;
+    updatePlayheadUI(posCursor);
+  }
+
+  function startWA(from){
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(audioCtx.destination);
+    src.start(0, from, Math.max(0.05, selEnd - from));
+    playingSrc = src; playT0 = audioCtx.currentTime; playFrom = from; playMode = 'wa';
+    src.onended = () => { if (playingSrc === src && playMode === 'wa') finishPlayback(); };
+  }
+
+  async function startPlayback(){
+    if (!duration) return;
+    if (!(selEnd > selStart)){ toast('Ajusta primero el inicio y el fin del recorte.'); return; }
+    let from = posCursor;
+    if (!(from >= selStart && from < selEnd - 0.05)) from = selStart;
+
+    // 1) Elemento <audio>: reproduce aunque el dispositivo esté en modo silencio (iPhone/iPad)
+    let started = false;
+    if (previewEl && previewURL){
+      try {
+        if (previewEl.readyState < 1) await metaDuration(previewEl);
+        previewEl.currentTime = from;
+        previewEl.volume = 1;
+        await previewEl.play();
+        started = true; playMode = 'el';
+      } catch(e){
+        try { previewEl.pause(); } catch(_){}
+      }
+    }
+    // 2) Respaldo con Web Audio si el navegador no reproduce ese formato en <audio>
+    if (!started && audioBuf){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      startWA(from);
+      started = true;
+    }
+    if (!started){ toast('La vista previa no está disponible para este formato.'); return; }
+
+    posCursor = from;
+    $('icoPlay').style.display = 'none';
+    $('icoPause').style.display = '';
+    showCursorUI();
+    updatePlayheadUI(from);
+
+    const tick = () => {
+      if (!playMode) return;
+      const t = currentPos();
+      posCursor = t;
+      updatePlayheadUI(t);
+      if (t >= selEnd - 0.02){ finishPlayback(); return; }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+  }
+
+  // Mover el cursor para adelantar o atrasar (sonando o en pausa)
+  function seekTo(t){
+    if (!duration) return;
+    t = clamp(t, selStart, Math.max(selStart, selEnd - 0.02));
+    posCursor = t;
+    if (playMode === 'el'){
+      try { previewEl.currentTime = t; } catch(e){}
+    } else if (playMode === 'wa'){
+      const src = playingSrc; playingSrc = null;
+      if (src){ try { src.stop(); } catch(e){} }
+      startWA(t);
+    }
+    showCursorUI();
+    updatePlayheadUI(t);
+  }
+
+  $('playBtn').addEventListener('click', () => {
+    if (playMode) pausePreview();
+    else startPlayback();
+  });
+  $('btnToStart').addEventListener('click', () => { if (duration) seekTo(selStart); });
+
+  // arrastrar la línea de reproducción para adelantar o atrasar
+  $('playhead').addEventListener('pointerdown', e => {
+    if (!duration) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const move = ev => { if (!pinchActive) seekTo(timeAtClientX(ev.clientX)); };
     const up = () => {
       el.releasePointerCapture(e.pointerId);
       el.removeEventListener('pointermove', move);
@@ -1056,85 +1320,12 @@
     el.addEventListener('pointercancel', up);
   });
 
-  /* ---- Vista previa ---- */
-  function stopPreview(){
-    if (playMode === 'el' && previewEl){ try { previewEl.pause(); } catch(e){} }
-    if (playingSrc){ try { playingSrc.stop(); } catch(e){} playingSrc = null; }
-    playMode = null;
-    cancelAnimationFrame(rafId);
-    $('playhead').style.display = 'none';
-    $('tagP').style.display = 'none';
-    $('icoPlay').style.display = '';
-    $('icoPause').style.display = 'none';
-  }
-
-  function updatePlayheadUI(t){
-    const w = waveBox.clientWidth;
-    const x = clamp(((t - viewA) / viewSpan()) * w, 0, w);
-    $('playhead').style.left = x + 'px';
-    const tag = $('tagP');
-    tag.style.left = clamp(x, 30, w - 30) + 'px';
-    tag.textContent = fmtTime(t, true);
-    $('roPos').textContent = fmtTime(t, true);
-  }
-
-  $('playBtn').addEventListener('click', async () => {
-    if (playMode){ stopPreview(); return; }
-    if (!(selEnd > selStart)){ toast('Ajusta primero el inicio y el fin del recorte.'); return; }
-
-    // 1) Elemento <audio>: reproduce aunque el dispositivo esté en modo silencio (iPhone/iPad)
-    let started = false;
-    if (previewEl && previewURL){
-      try {
-        if (previewEl.readyState < 1) await metaDuration(previewEl);
-        previewEl.currentTime = selStart;
-        previewEl.volume = 1;
-        await previewEl.play();
-        started = true; playMode = 'el';
-      } catch(e){
-        try { previewEl.pause(); } catch(_){}
-        started = false;
-      }
-    }
-    // 2) Respaldo con Web Audio si el navegador no reproduce ese formato en <audio>
-    if (!started && audioBuf){
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!audioCtx) audioCtx = new AC();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
-      const src = audioCtx.createBufferSource();
-      src.buffer = audioBuf;
-      src.connect(audioCtx.destination);
-      src.start(0, selStart, Math.max(0.05, selEnd - selStart));
-      playingSrc = src; playT0 = audioCtx.currentTime; playFrom = selStart;
-      src.onended = () => { if (playingSrc === src) stopPreview(); };
-      started = true; playMode = 'wa';
-    }
-    if (!started){ toast('La vista previa no está disponible para este formato.'); return; }
-
-    $('icoPlay').style.display = 'none';
-    $('icoPause').style.display = '';
-    $('playhead').style.display = 'block';
-    $('tagP').style.display = 'block';
-    updatePlayheadUI(selStart);
-
-    const tick = () => {
-      if (!playMode) return;
-      const t = playMode === 'el'
-        ? previewEl.currentTime
-        : playFrom + (audioCtx.currentTime - playT0);
-      updatePlayheadUI(t);
-      if (t >= selEnd - 0.02){ stopPreview(); return; }
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
-  });
-
   /* ---- Exportar recorte ---- */
   $('btnCut').addEventListener('click', async () => {
     if (!cutFile) return;
     const a = selStart, b = selEnd;
     if (!(b > a)){ toast('El fin del recorte debe ser mayor que el inicio.'); return; }
-    stopPreview();
+    pausePreview();
 
     const ext = extOf(cutFile.name) || 'mp3';
     const inName = 'input.' + ext, outName = 'output.' + ext;
