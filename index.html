@@ -237,7 +237,7 @@
   .zoom-btn{
     width:44px; height:44px; border-radius:50%; border:1px solid var(--border);
     background:var(--surface-2); color:var(--text-2); flex:none;
-    display:grid; place-items:center; margin-left:auto;
+    display:grid; place-items:center;
     transition:background var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease, transform .15s ease;
   }
   .zoom-btn:hover{ transform:scale(1.05); }
@@ -378,7 +378,7 @@
         </svg>
       </div>
       <div>
-        <h1>Splitter MP3</h1>
+        <h1>Splitter MP3 v1.2</h1>
         <p>Corta y une audio sin salir del navegador</p>
       </div>
     </div>
@@ -453,6 +453,9 @@
         </div>
 
         <div class="transport">
+          <button type="button" class="zoom-btn" id="btnToStart" title="Reiniciar al inicio del recorte" aria-label="Reiniciar al inicio del recorte">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20 9 12l10-8v16z" fill="currentColor" stroke="none"/><line x1="5" y1="5" x2="5" y2="19"/></svg>
+          </button>
           <button type="button" class="play-btn" id="playBtn" aria-label="Reproducir la selección">
             <svg id="icoPlay" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.54.84l10-6.5a1 1 0 0 0 0-1.68l-10-6.5A1 1 0 0 0 8 5.5z"/></svg>
             <svg id="icoPause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
@@ -463,9 +466,6 @@
             <div class="readout"><div class="lbl">Fin</div><div class="val" id="roEnd">0:00.0</div></div>
             <div class="readout"><div class="lbl">Selección</div><div class="val acc" id="roDur">0:00.0</div></div>
           </div>
-          <button type="button" class="zoom-btn" id="btnToStart" title="Ir al inicio del recorte">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20 9 12l10-8v16z" fill="currentColor" stroke="none"/><line x1="5" y1="5" x2="5" y2="19"/></svg>
-          </button>
         </div>
 
         <div class="time-grid">
@@ -697,10 +697,10 @@
   let cutFile = null;        // File original
   let audioBuf = null;       // AudioBuffer decodificado (para onda y respaldo de preview)
   let peaks = null;          // picos de todo el archivo
-  let dispPeaks = null;      // picos de la ventana visible (cambia con el zoom)
+  let dispPeaks = null;      // picos visibles de la onda
   let duration = 0;          // segundos
   let selStart = 0, selEnd = 0;
-  let viewA = 0, viewB = 0;  // ventana visible de la onda (zoom por pellizco)
+  let viewA = 0, viewB = 0;  // intervalo visible completo de la onda
   let posCursor = 0;         // posición actual del cursor de reproducción
   let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
   let previewEl = null, previewURL = null, playMode = null; // 'el' (elemento <audio>) | 'wa' (Web Audio)
@@ -821,7 +821,7 @@
     return out;
   }
 
-  /* ---- Ventana de zoom (se controla con gestos, ver más abajo) ---- */
+  /* ---- Intervalo visible de la onda ---- */
   function viewSpan(){ return Math.max(0.001, viewB - viewA); }
   function isZoomed(){ return duration > 0 && viewSpan() < duration - 0.001; }
 
@@ -1013,7 +1013,6 @@
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
       const move = ev => {
-        if (pinchActive) return;
         const t = timeAtClientX(ev.clientX);
         if (side === 'left')  setSelection(Math.min(t, selEnd - MIN_GAP), selEnd, 'left');
         else                  setSelection(selStart, Math.max(t, selStart + MIN_GAP), 'right');
@@ -1053,7 +1052,6 @@
     const t0 = timeAtClientX(e.clientX);
     const a0 = selStart, len = selEnd - selStart;
     const move = ev => {
-      if (pinchActive) return;
       if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
       moved = true;
       const dt = timeAtClientX(ev.clientX) - t0;
@@ -1066,111 +1064,40 @@
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
       // toque sin arrastre: ubicar el cursor de reproducción en ese punto
-      if (!moved && !pinchActive && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
+      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
   });
 
-  /* ---- Gestos sobre la onda: pellizco = zoom, arrastre = desplazar, toque = ubicar cursor ---- */
-  const MIN_SPAN = 0.3;               // zoom máximo: 0.3 s visibles
-  const pinchPts = new Map();
-  let pinchActive = false, pinch0 = null;
-
-  waveBox.addEventListener('pointerdown', e => {
-    if (!duration) return;
-    pinchPts.set(e.pointerId, e.clientX);
-    if (pinchPts.size === 2){
-      const ids = [...pinchPts.keys()];
-      const r = waveBox.getBoundingClientRect();
-      const fx = id => clamp((pinchPts.get(id) - r.left) / r.width, 0, 1);
-      pinch0 = {
-        i1: ids[0], i2: ids[1],
-        t1: viewA + fx(ids[0]) * viewSpan(),
-        t2: viewA + fx(ids[1]) * viewSpan()
-      };
-      pinchActive = true;
-    }
-  });
-  waveBox.addEventListener('pointermove', e => {
-    if (!pinchActive || !pinchPts.has(e.pointerId)) return;
-    pinchPts.set(e.pointerId, e.clientX);
-    if (!pinchPts.has(pinch0.i1) || !pinchPts.has(pinch0.i2)) return;
-    const r = waveBox.getBoundingClientRect();
-    let x1 = pinchPts.get(pinch0.i1) - r.left;
-    let x2 = pinchPts.get(pinch0.i2) - r.left;
-    let t1 = pinch0.t1, t2 = pinch0.t2;
-    if (x2 < x1){ const tx = x1; x1 = x2; x2 = tx; const tt = t1; t1 = t2; t2 = tt; }
-    if (x2 - x1 < 24 || t2 - t1 <= 0) return;
-    let span = clamp((t2 - t1) * r.width / (x2 - x1), MIN_SPAN, duration);
-    let a = clamp(t1 - (x1 / r.width) * span, 0, Math.max(0, duration - span));
-    viewA = a; viewB = a + span;
-    scheduleWave();
-  });
-  function pinchEnd(e){
-    pinchPts.delete(e.pointerId);
-    if (pinchPts.size < 2){ pinchActive = false; pinch0 = null; }
-  }
-  waveBox.addEventListener('pointerup', pinchEnd);
-  waveBox.addEventListener('pointercancel', pinchEnd);
-
-  // un dedo sobre la onda: arrastrar desplaza la vista (con zoom); un toque ubica el cursor
+  /* ---- Interacción sobre la onda: toque = ubicar cursor; zoom desactivado ---- */
   canvas.addEventListener('pointerdown', e => {
-    if (!duration) return;
+    if (!duration || !e.isPrimary) return;
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
     const startX = e.clientX;
-    let lastX = e.clientX, moved = false;
+    let moved = false;
+
     const move = ev => {
-      if (pinchActive) return;
-      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
-      moved = true;
-      if (isZoomed()){
-        const r = waveBox.getBoundingClientRect();
-        const span = viewSpan();
-        const a = clamp(viewA + (lastX - ev.clientX) / r.width * span, 0, duration - span);
-        viewA = a; viewB = a + span;
-        scheduleWave();
-      }
-      lastX = ev.clientX;
+      if (Math.abs(ev.clientX - startX) > 4) moved = true;
     };
     const up = ev => {
       canvas.releasePointerCapture(e.pointerId);
       canvas.removeEventListener('pointermove', move);
       canvas.removeEventListener('pointerup', up);
       canvas.removeEventListener('pointercancel', up);
-      if (!moved && !pinchActive && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
+      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
     };
+
     canvas.addEventListener('pointermove', move);
     canvas.addEventListener('pointerup', up);
     canvas.addEventListener('pointercancel', up);
   });
 
-  // doble clic / doble toque: volver a la vista completa
-  canvas.addEventListener('dblclick', () => { if (duration) resetView(); });
-
-  // trackpad y ratón: pellizco del trackpad (ctrl+rueda) hace zoom; rueda desplaza cuando hay zoom
+  // Bloquea únicamente el pellizco del trackpad sobre la onda; el desplazamiento normal sigue disponible.
   waveBox.addEventListener('wheel', e => {
-    if (!duration) return;
-    if (e.ctrlKey || e.metaKey){
-      e.preventDefault();
-      const r = waveBox.getBoundingClientRect();
-      const frac = clamp((e.clientX - r.left) / r.width, 0, 1);
-      const tAt = viewA + frac * viewSpan();
-      const span = clamp(viewSpan() * Math.exp(e.deltaY * 0.0028), MIN_SPAN, duration);
-      const a = clamp(tAt - frac * span, 0, Math.max(0, duration - span));
-      viewA = a; viewB = a + span;
-      scheduleWave();
-    } else if (isZoomed()){
-      e.preventDefault();
-      const r = waveBox.getBoundingClientRect();
-      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-      const span = viewSpan();
-      const a = clamp(viewA + (delta / r.width) * span, 0, duration - span);
-      viewA = a; viewB = a + span;
-      scheduleWave();
-    }
+    if (e.ctrlKey || e.metaKey) e.preventDefault();
   }, { passive:false });
 
   /* ---- Reproducción ---- */
@@ -1308,7 +1235,7 @@
     e.preventDefault();
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
-    const move = ev => { if (!pinchActive) seekTo(timeAtClientX(ev.clientX)); };
+    const move = ev => { seekTo(timeAtClientX(ev.clientX)); };
     const up = () => {
       el.releasePointerCapture(e.pointerId);
       el.removeEventListener('pointermove', move);
