@@ -387,6 +387,13 @@
   .editor-tool.danger{color:#d34b3f}
   .editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 
+  /* Fragmentos conservados dentro de la misma onda. */
+  .clip-layer{position:absolute;inset:0;z-index:5;pointer-events:none;overflow:hidden;border-radius:var(--radius-m)}
+  .clip-segment-mark{position:absolute;top:4px;bottom:4px;border:1px solid var(--accent);border-radius:6px;opacity:.52}
+  .clip-segment-mark.active{opacity:1;border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-soft)}
+  .clip-segment-mark span{position:absolute;top:5px;left:50%;transform:translateX(-50%);min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--surface);color:var(--accent-strong);border:1px solid var(--border);font-size:10px;font-weight:700;line-height:16px;text-align:center;font-variant-numeric:tabular-nums}
+  .clip-segment-mark.active span{background:var(--accent);border-color:var(--accent);color:#fff}
+
 </style>
 </head>
 <body>
@@ -522,7 +529,7 @@
         <div class="actions">
           <button type="button" class="btn-primary" id="btnCut">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-            Exportar recorte
+            Exportar audio editado
           </button>
           <div class="progress" id="progCut"><div class="bar" id="barCut"></div></div>
         </div>
@@ -721,6 +728,8 @@
   let dispPeaks = null;      // picos visibles de la onda
   let duration = 0;          // segundos
   let selStart = 0, selEnd = 0;
+  let clips = [], activeClip = 0, clipSerial = 0;
+  const undoSelections = [], redoSelections = [];
   let viewA = 0, viewB = 0;  // intervalo visible completo de la onda
   let posCursor = 0;         // posición actual del cursor de reproducción
   let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
@@ -728,6 +737,62 @@
 
   const waveBox = $('waveBox'), canvas = $('waveCanvas'), ctx2d = canvas.getContext('2d');
   const HANDLE_W = 22, MIN_GAP = 0.1;
+  const clipLayer = document.createElement('div');
+  clipLayer.className = 'clip-layer';
+  clipLayer.setAttribute('aria-hidden', 'true');
+  waveBox.insertBefore(clipLayer, $('playhead'));
+
+  function newClip(start, end){ return { id: ++clipSerial, start, end }; }
+  function currentClip(){ return clips[activeClip] || null; }
+  function keptDuration(){ return clips.reduce((sum, clip) => sum + Math.max(0, clip.end - clip.start), 0); }
+  function clipIndexAtTime(t){
+    for (let i = 0; i < clips.length; i++){
+      const clip = clips[i];
+      const last = i === clips.length - 1;
+      if (t >= clip.start - 0.001 && (t < clip.end - 0.001 || (last && t <= clip.end + 0.001))) return i;
+      if (i < clips.length - 1 && Math.abs(t - clip.end) < 0.001 && Math.abs(clips[i + 1].start - t) < 0.001) return i + 1;
+    }
+    return -1;
+  }
+  function nearestClipIndex(t){
+    const exact = clipIndexAtTime(t);
+    if (exact >= 0) return exact;
+    if (!clips.length) return -1;
+    let best = 0, distance = Infinity;
+    clips.forEach((clip, i) => {
+      const d = t < clip.start ? clip.start - t : t > clip.end ? t - clip.end : 0;
+      if (d < distance){ best = i; distance = d; }
+    });
+    return best;
+  }
+  function clipLimits(index = activeClip){
+    return {
+      min: index > 0 ? clips[index - 1].end : 0,
+      max: index < clips.length - 1 ? clips[index + 1].start : duration
+    };
+  }
+  function editorSnapshot(){
+    return { clips: clips.map(clip => ({...clip})), activeClip, posCursor };
+  }
+  function pushEditorHistory(){
+    undoSelections.push(editorSnapshot());
+    if (undoSelections.length > 60) undoSelections.shift();
+    redoSelections.length = 0;
+    refreshEditButtons();
+  }
+  function activateClip(index, cursor = null){
+    if (!clips.length) return;
+    activeClip = clamp(index, 0, clips.length - 1);
+    const clip = currentClip();
+    selStart = clip.start;
+    selEnd = clip.end;
+    if (cursor == null) cursor = clip.start;
+    posCursor = clamp(cursor, clip.start, Math.max(clip.start, clip.end - 0.02));
+    syncAll('clip');
+    showCursorUI();
+    updatePlayheadUI(posCursor);
+    refreshEditButtons();
+  }
 
   /* ---- Carga de archivo ---- */
   function bindDropzone(dz, input, onFiles){
@@ -786,6 +851,10 @@
     }
 
     if (!duration) duration = 0;
+    clips = duration ? [newClip(0, duration)] : [];
+    activeClip = 0;
+    undoSelections.length = 0;
+    redoSelections.length = 0;
     selStart = 0;
     selEnd = duration || 0;
     $('fMeta').textContent = fmtSize(file.size) + (duration ? ' · ' + fmtTime(duration, true) : '');
@@ -796,6 +865,7 @@
     resetView();
     resizeCanvas();
     syncAll('code');
+    refreshEditButtons();
     if (duration){ showCursorUI(); updatePlayheadUI(0); }
   }
 
@@ -913,15 +983,16 @@
     const step = W / n;
     const barW = Math.max(1, step * 0.62);
     const span = viewSpan();
-    const selA = duration ? ((selStart - viewA) / span) * n : 0;
-    const selB = duration ? ((selEnd   - viewA) / span) * n : n;
-
     for (let i = 0; i < n; i++){
       const amp = Math.max(0.025, dispPeaks[i]) * (H * 0.42);
-      ctx2d.fillStyle = (i >= selA && i <= selB) ? acc : idle;
+      const sampleTime = viewA + ((i + 0.5) / n) * span;
+      const clipIndex = clipIndexAtTime(sampleTime);
+      ctx2d.fillStyle = clipIndex >= 0 ? acc : idle;
+      ctx2d.globalAlpha = clipIndex === activeClip ? 1 : clipIndex >= 0 ? .55 : .42;
       const x = i * step + (step - barW) / 2;
       roundBar(ctx2d, x, mid - amp, barW, amp * 2);
     }
+    ctx2d.globalAlpha = 1;
   }
   function roundBar(c, x, y, w, h){
     const r = Math.min(w / 2, 2 * (window.devicePixelRatio || 1));
@@ -971,19 +1042,46 @@
 
     $('hL').setAttribute('aria-valuenow', selStart.toFixed(1));
     $('hR').setAttribute('aria-valuenow', selEnd.toFixed(1));
+    layoutClipSegments();
+  }
+
+  function layoutClipSegments(){
+    clipLayer.innerHTML = '';
+    if (!duration || !clips.length) return;
+    const w = waveBox.clientWidth;
+    const span = viewSpan() || 1;
+    clips.forEach((clip, index) => {
+      if (clip.end < viewA || clip.start > viewB) return;
+      const left = clamp(((clip.start - viewA) / span) * w, 0, w);
+      const right = clamp(((clip.end - viewA) / span) * w, 0, w);
+      if (right - left < 1) return;
+      const mark = document.createElement('div');
+      mark.className = 'clip-segment-mark' + (index === activeClip ? ' active' : '');
+      mark.style.left = left + 'px';
+      mark.style.width = Math.max(1, right - left) + 'px';
+      if (right - left >= 25){
+        const number = document.createElement('span');
+        number.textContent = String(index + 1);
+        mark.appendChild(number);
+      }
+      clipLayer.appendChild(mark);
+    });
   }
 
   function setSelection(a, b, source){
     if (!duration) { selStart = a; selEnd = b; }
     else {
-      a = clamp(a, 0, duration);
-      b = clamp(b, 0, duration);
+      const limits = clipLimits();
+      a = clamp(a, limits.min, limits.max);
+      b = clamp(b, limits.min, limits.max);
       if (b - a < MIN_GAP){
         if (source === 'left')  a = b - MIN_GAP;
         else                    b = a + MIN_GAP;
-        a = clamp(a, 0, duration); b = clamp(b, 0, duration);
+        a = clamp(a, limits.min, limits.max); b = clamp(b, limits.min, limits.max);
       }
       selStart = a; selEnd = b;
+      const clip = currentClip();
+      if (clip){ clip.start = a; clip.end = b; }
     }
     syncAll(source);
   }
@@ -1016,9 +1114,8 @@
       let a = readHMS('s'), b = readHMS('e');
       if (duration){ a = clamp(a, 0, duration); b = clamp(b, 0, duration); }
       if (b <= a) b = a + MIN_GAP;
-      selStart = a; selEnd = duration ? clamp(b, 0, duration) : b;
+      setSelection(a, duration ? clamp(b, 0, duration) : b, 'inputs');
       if (isZoomed() && (selStart < viewA - 0.001 || selEnd > viewB + 0.001)) resetView();
-      syncAll('inputs');
       writeHMS('s', selStart); writeHMS('e', selEnd);
     });
   });
@@ -1076,7 +1173,8 @@
       if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
       moved = true;
       const dt = timeAtClientX(ev.clientX) - t0;
-      const a = clamp(a0 + dt, 0, duration - len);
+      const limits = clipLimits();
+      const a = clamp(a0 + dt, limits.min, Math.max(limits.min, limits.max - len));
       setSelection(a, a + len, 'frame');
     };
     const up = ev => {
@@ -1347,7 +1445,17 @@
   // Mover el cursor para adelantar o atrasar (sonando o en pausa)
   function seekTo(t){
     if (!duration) return;
-    t = clamp(t, selStart, Math.max(selStart, selEnd - 0.02));
+    const index = nearestClipIndex(t);
+    if (index < 0) return;
+    const clip = clips[index];
+    t = clamp(t, clip.start, Math.max(clip.start, clip.end - 0.02));
+    if (index !== activeClip){
+      activeClip = index;
+      selStart = clip.start;
+      selEnd = clip.end;
+      syncAll('clip');
+      refreshEditButtons();
+    }
     posCursor = t;
     if (playMode === 'el'){
       try { previewEl.currentTime = t; } catch(e){}
@@ -1384,15 +1492,17 @@
     el.addEventListener('pointercancel', up);
   });
 
-  /* ---- Exportar recorte ---- */
+  /* ---- Exportar todos los fragmentos conservados como un solo audio ---- */
   $('btnCut').addEventListener('click', async () => {
     if (!cutFile) return;
-    const a = selStart, b = selEnd;
-    if (!(b > a)){ toast('El fin del recorte debe ser mayor que el inicio.'); return; }
+    const plan = clips.filter(clip => clip.end > clip.start + 0.001).map(clip => ({...clip}));
+    if (!plan.length){ toast('Debe quedar al menos un fragmento para exportar.'); return; }
     pausePreview();
 
     const ext = extOf(cutFile.name) || 'mp3';
     const inName = 'input.' + ext, outName = 'output.' + ext;
+    const partNames = plan.map((_, i) => 'fragmento_' + i + '.' + ext);
+    const tempNames = [inName, outName, 'fragmentos.txt', ...partNames];
     const btn = $('btnCut'), prog = $('progCut'), bar = $('barCut'), stat = $('statCut');
     btn.disabled = true; prog.style.display = 'block'; bar.style.width = '0%';
 
@@ -1401,31 +1511,58 @@
       ff.setProgress(({ ratio }) => {
         if (ratio >= 0 && ratio <= 1) bar.style.width = Math.round(ratio * 100) + '%';
       });
-      stat.textContent = 'Cortando…';
+      stat.textContent = 'Preparando ' + plan.length + (plan.length === 1 ? ' fragmento…' : ' fragmentos…');
       ff.FS('writeFile', inName, await window.FFmpeg.fetchFile(cutFile));
-
-      const ss = a.toFixed(3), dur = (b - a).toFixed(3);
       let data = null;
-      // 1) sin recodificar: conserva el formato y la calidad originales
+
+      async function buildParts(copyCodec){
+        for (let i = 0; i < plan.length; i++){
+          const clip = plan[i];
+          stat.textContent = 'Preparando fragmento ' + (i + 1) + ' de ' + plan.length + '…';
+          bar.style.width = Math.round((i / Math.max(1, plan.length + 1)) * 86) + '%';
+          try { ff.FS('unlink', partNames[i]); } catch(e){}
+          const args = ['-ss', clip.start.toFixed(3), '-i', inName, '-t', (clip.end - clip.start).toFixed(3)];
+          if (copyCodec) args.push('-c', 'copy');
+          args.push(partNames[i]);
+          await ff.run(...args);
+        }
+      }
+      async function joinParts(copyCodec){
+        const list = partNames.map(name => "file '" + name + "'").join('\n');
+        ff.FS('writeFile', 'fragmentos.txt', new TextEncoder().encode(list));
+        const args = ['-f', 'concat', '-safe', '0', '-i', 'fragmentos.txt'];
+        if (copyCodec) args.push('-c', 'copy');
+        args.push(outName);
+        await ff.run(...args);
+        return ff.FS('readFile', outName);
+      }
+
       try {
-        await ff.run('-ss', ss, '-i', inName, '-t', dur, '-c', 'copy', outName);
-        data = ff.FS('readFile', outName);
+        await buildParts(true);
+        stat.textContent = 'Uniendo los fragmentos conservados…';
+        bar.style.width = '90%';
+        data = await joinParts(true);
       } catch(e){ data = null; }
-      // 2) respaldo: recodificar en el mismo contenedor
       if (!data || !data.length){
-        try { ff.FS('unlink', outName); } catch(e){}
-        await ff.run('-ss', ss, '-i', inName, '-t', dur, outName);
-        data = ff.FS('readFile', outName);
+        ffCleanup([...partNames, 'fragmentos.txt', outName]);
+        await buildParts(false);
+        stat.textContent = 'Uniendo los fragmentos conservados…';
+        bar.style.width = '90%';
+        try { data = await joinParts(true); }
+        catch(e){
+          try { ff.FS('unlink', outName); } catch(_){}
+          data = await joinParts(false);
+        }
       }
       if (!data || !data.length) throw new Error('salida vacía');
-      downloadBytes(data, baseOf(cutFile.name) + ' (recorte).' + ext, MIMES[ext]);
+      downloadBytes(data, baseOf(cutFile.name) + ' (editado).' + ext, MIMES[ext]);
       bar.style.width = '100%';
-      stat.textContent = 'Listo: se descargó el recorte (' + fmtTime(b - a, true) + ').';
-      ffCleanup([inName, outName]);
+      stat.textContent = 'Listo: se descargó un solo audio con ' + plan.length + (plan.length === 1 ? ' fragmento' : ' fragmentos') + ' (' + fmtTime(keptDuration(), true) + ').';
+      ffCleanup(tempNames);
     } catch(err){
       stat.textContent = '';
-      toast('No se pudo exportar el recorte. Revisa tu conexión (el motor se descarga la primera vez) e inténtalo de nuevo.');
-      ffCleanup([inName, outName]);
+      toast('No se pudo exportar el audio editado. Revisa tu conexión (el motor se descarga la primera vez) e inténtalo de nuevo.');
+      ffCleanup(tempNames);
     } finally {
       btn.disabled = false;
       setTimeout(() => { prog.style.display = 'none'; }, 1200);
@@ -1545,52 +1682,64 @@
   <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\
   <button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\
   <button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\
-  <button class="editor-tool danger" id="editDelete" title="Limpiar recorte" aria-label="Limpiar recorte"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';
+  <button class="editor-tool danger" id="editDelete" title="Eliminar fragmento" aria-label="Eliminar fragmento"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';
   document.querySelector('.transport').insertAdjacentElement('afterend',editorTools);
 
   const editUndo=$('editUndo'),editRedo=$('editRedo'),editCut=$('editCut'),editDelete=$('editDelete');
-  const undoSelections=[],redoSelections=[];
-  const selectionSnapshot=()=>[selStart,selEnd];
-  const sameSelection=(a,b)=>a&&b&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001;
-  function refreshEditButtons(){editUndo.disabled=!undoSelections.length;editRedo.disabled=!redoSelections.length}
-  function rememberBeforeEdit(){
-    const snap=selectionSnapshot();
-    if(!sameSelection(undoSelections[undoSelections.length-1],snap))undoSelections.push(snap);
-    if(undoSelections.length>50)undoSelections.shift();
-    redoSelections.length=0;refreshEditButtons();
+  function refreshEditButtons(){
+    editUndo.disabled=!undoSelections.length;
+    editRedo.disabled=!redoSelections.length;
+    editCut.disabled=!clips.length;
+    editDelete.disabled=clips.length<=1;
   }
-  function applySelectionSnapshot(snap){
-    if(!snap)return;
-    setSelection(snap[0],snap[1],'history');
-    posCursor=clamp(posCursor,selStart,selEnd);
-    showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+  function applyEditorSnapshot(snap){
+    if(!snap||!snap.clips||!snap.clips.length)return;
+    pausePreview();
+    clips=snap.clips.map(clip=>({...clip}));
+    activeClip=clamp(snap.activeClip,0,clips.length-1);
+    const clip=currentClip();
+    selStart=clip.start;selEnd=clip.end;
+    posCursor=clamp(snap.posCursor,clip.start,Math.max(clip.start,clip.end-.02));
+    syncAll('history');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
   }
   editUndo.addEventListener('click',()=>{
     if(!undoSelections.length)return;
-    redoSelections.push(selectionSnapshot());applySelectionSnapshot(undoSelections.pop());
+    redoSelections.push(editorSnapshot());applyEditorSnapshot(undoSelections.pop());
   });
   editRedo.addEventListener('click',()=>{
     if(!redoSelections.length)return;
-    undoSelections.push(selectionSnapshot());applySelectionSnapshot(redoSelections.pop());
+    undoSelections.push(editorSnapshot());applyEditorSnapshot(redoSelections.pop());
   });
   editCut.addEventListener('click',()=>{
     if(!duration)return;
     if(playMode)pausePreview();
-    const t=clamp(posCursor,selStart,selEnd);
-    if(t<=selStart+MIN_GAP||t>=selEnd-MIN_GAP){
-      toast('Coloca el cursor vertical dentro de la selección.');return;
+    const index=clipIndexAtTime(posCursor);
+    if(index<0){toast('Coloca el cursor vertical dentro de un fragmento.');return;}
+    if(index!==activeClip)activateClip(index,posCursor);
+    const clip=currentClip();
+    const t=clamp(posCursor,clip.start,clip.end);
+    if(t<=clip.start+MIN_GAP||t>=clip.end-MIN_GAP){
+      toast('Coloca el cursor vertical dentro del fragmento, no sobre sus extremos.');return;
     }
-    rememberBeforeEdit();
-    const left=t-selStart,right=selEnd-t;
-    if(left<=right)setSelection(t,selEnd,'scissors');
-    else setSelection(selStart,t,'scissors');
-    posCursor=t;showCursorUI();updatePlayheadUI(posCursor);
-    toast('Recorte ajustado exactamente en '+fmtTime(t,true)+'.');
+    pushEditorHistory();
+    const left=newClip(clip.start,t),right=newClip(t,clip.end);
+    clips.splice(activeClip,1,left,right);
+    activeClip+=1;
+    selStart=right.start;selEnd=right.end;posCursor=t;
+    syncAll('scissors');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+    toast('Corte creado en '+fmtTime(t,true)+'. Ahora tienes '+clips.length+(clips.length===1?' fragmento.':' fragmentos.'));
   });
   editDelete.addEventListener('click',()=>{
-    if(!duration)return;
-    rememberBeforeEdit();setSelection(0,duration,'clear');
-    posCursor=0;showCursorUI();updatePlayheadUI(0);
+    if(!duration||clips.length<=1){toast('El audio debe conservar al menos un fragmento.');return;}
+    if(playMode)pausePreview();
+    pushEditorHistory();
+    const removed=activeClip;
+    clips.splice(removed,1);
+    activeClip=Math.min(removed,clips.length-1);
+    const clip=currentClip();
+    selStart=clip.start;selEnd=clip.end;posCursor=clip.start;
+    syncAll('delete');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+    toast('Fragmento eliminado. Quedan '+clips.length+(clips.length===1?' fragmento.':' fragmentos.'));
   });
   refreshEditButtons();
 
