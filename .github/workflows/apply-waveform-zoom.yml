@@ -134,3 +134,5 @@ jobs:
           git add index.html
           git commit -m "Añadir zoom gestual a la onda de audio"
           git push
+
+# Trigger de aplicación
