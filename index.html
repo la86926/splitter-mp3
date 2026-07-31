@@ -10,9 +10,11 @@
 <div id="loader">Abriendo Splitter MP3…</div>
 <script>
 (async function(){
-  const response=await fetch('./splitter-app.html?v=20260731-wavezoom5',{cache:'no-store'});
+  const response=await fetch('./splitter-app.html?v=20260731-wavezoom6',{cache:'no-store'});
   if(!response.ok)throw new Error('No se pudo cargar la aplicación original.');
   let source=await response.text();
+
+  source=source.replace(/\s*<footer>[\s\S]*?<\/footer>/i,'');
 
   source=source.replace(
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
@@ -155,7 +157,7 @@
   if(!source.includes(old))throw new Error('No se encontró el bloque original de la onda.');
   source=source.replace(old,replacement);
 
-  source=source.replace('</style>',`\nhtml,body{touch-action:pan-y;overscroll-behavior:none} .wave-box,#waveCanvas{touch-action:none!important}.editor-tools{display:flex;justify-content:center;gap:8px;margin:14px 0 2px}.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center}.editor-tool:active{transform:scale(.95)}.editor-tool:disabled{opacity:.35}.editor-tool.danger{color:#d34b3f}.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n</style>`);
+  source=source.replace('</style>',`\nhtml,body{touch-action:pan-y;overscroll-behavior:none}footer{display:none!important}.wave-box,#waveCanvas{touch-action:none!important}.editor-tools{display:flex;justify-content:center;gap:8px;margin:14px 0 2px}.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center}.editor-tool:active{transform:scale(.95)}.editor-tool:disabled{opacity:.35}.editor-tool.danger{color:#d34b3f}.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n</style>`);
 
   source=source.replace('</body>',`<script>\n(function(){\n  document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});\n  document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});\n  document.addEventListener('gestureend',e=>e.preventDefault(),{passive:false});\n  let lastTouchEnd=0;document.addEventListener('touchend',e=>{const now=Date.now();if(now-lastTouchEnd<320)e.preventDefault();lastTouchEnd=now},{passive:false});\n\n  const transport=document.querySelector('.transport');if(!transport)return;\n  const tools=document.createElement('div');tools.className='editor-tools';tools.innerHTML='\\
   <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\\
