@@ -280,7 +280,7 @@ index = '''<!DOCTYPE html>
   const source=await response.text();
   document.open();document.write(source);document.close();
 })().catch(error=>{console.error(error);document.getElementById('loader').textContent='No se pudo abrir Splitter MP3. Recarga la página.'});
-<\/script>
+</script>
 </body>
 </html>
 '''
