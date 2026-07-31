@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  TEST_REVISION: 7
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -22,7 +25,7 @@ jobs:
 
       - name: Mark workflow start
         run: |
-          printf '{"status":"running","commit":"%s","run_id":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > splitter-verified-status.json
+          printf '{"status":"running","commit":"%s","run_id":"%s","revision":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$TEST_REVISION" > splitter-verified-status.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add splitter-verified-status.json
@@ -52,7 +55,7 @@ jobs:
 
       - name: Save success
         run: |
-          printf '{"status":"success","commit":"%s","run_id":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > splitter-verified-status.json
+          printf '{"status":"success","commit":"%s","run_id":"%s","revision":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$TEST_REVISION" > splitter-verified-status.json
           git add splitter-verified-status.json
           git commit -m "Registrar éxito de Splitter MP3 [skip ci]"
           git pull --rebase origin main
@@ -61,7 +64,8 @@ jobs:
       - name: Save failure
         if: failure()
         run: |
-          printf '{"status":"failure","commit":"%s","run_id":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > splitter-verified-status.json
+          git restore index.html splitter-app.html 2>/dev/null || true
+          printf '{"status":"failure","commit":"%s","run_id":"%s","revision":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$TEST_REVISION" > splitter-verified-status.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add splitter-verified-status.json
