@@ -29,8 +29,16 @@ if 'waveBox.dataset.pinchMoves' not in text:
         1,
     )
 
+# Durante un pellizco, las asas y el marco pueden recibir pointerup después de que
+# el navegador ya liberó la captura. Evitamos que eso produzca NotFoundError.
+text = re.sub(
+    r'(?<!try\{)([A-Za-z_$][\w$]*)\.releasePointerCapture\(([^;]+?)\);',
+    r'try{\1.releasePointerCapture(\2)}catch(_){}',
+    text,
+)
+
 APP.write_text(text, encoding='utf-8')
 
 index = INDEX.read_text(encoding='utf-8')
-index = re.sub(r'20260731-native\d+', '20260731-native15', index)
+index = re.sub(r'20260731-native\d+', '20260731-native16', index)
 INDEX.write_text(index, encoding='utf-8')
