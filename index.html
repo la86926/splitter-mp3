@@ -13,9 +13,60 @@
 <div id="loader">Abriendo Splitter MP3…</div>
 <script>
 (async function(){
-  const response = await fetch('./splitter-app.html?v=20260731-zoom', { cache:'no-store' });
+  const response = await fetch('./splitter-app.html?v=20260731-zoom2', { cache:'no-store' });
   if (!response.ok) throw new Error('No se pudo cargar la aplicación original.');
   const source = await response.text();
+
+  function replaceOnce(text, before, after, label){
+    if (!text.includes(before)) throw new Error('No se encontró la sección: ' + label);
+    return text.replace(before, after);
+  }
+
+  let patched = source;
+
+  patched = replaceOnce(
+    patched,
+    `  const HANDLE_W = 22, MIN_GAP = 0.1;`,
+    `  const HANDLE_W = 22, MIN_GAP = 0.1;
+  let pinchActive = false;`,
+    'estado del editor'
+  );
+
+  patched = replaceOnce(
+    patched,
+    `      const move = ev => {
+        const t = timeAtClientX(ev.clientX);`,
+    `      const move = ev => {
+        if (pinchActive) return;
+        const t = timeAtClientX(ev.clientX);`,
+    'arrastre de las asas'
+  );
+
+  patched = replaceOnce(
+    patched,
+    `    const move = ev => {
+      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;`,
+    `    const move = ev => {
+      if (pinchActive){ moved = true; return; }
+      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;`,
+    'arrastre de la selección'
+  );
+
+  patched = replaceOnce(
+    patched,
+    `      // toque sin arrastre: ubicar el cursor de reproducción en ese punto
+      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));`,
+    `      // toque sin arrastre: ubicar el cursor de reproducción en ese punto
+      if (!pinchActive && !moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));`,
+    'toque sobre la selección'
+  );
+
+  patched = replaceOnce(
+    patched,
+    `    const move = ev => { seekTo(timeAtClientX(ev.clientX)); };`,
+    `    const move = ev => { if (!pinchActive) seekTo(timeAtClientX(ev.clientX)); };`,
+    'arrastre del cursor de reproducción'
+  );
 
   const oldBlock = `  /* ---- Interacción sobre la onda: toque = ubicar cursor; zoom desactivado ---- */
   canvas.addEventListener('pointerdown', e => {
@@ -48,10 +99,11 @@
 
   const zoomBlock = `  /* ---- Interacción sobre la onda: toque para ubicar cursor y zoom gestual ---- */
   const zoomPointers = new Map();
-  let pinchActive = false;
   let pinchStartDistance = 0;
   let pinchStartSpan = 0;
   let pinchAnchorTime = 0;
+  let pinchSelectionStart = 0;
+  let pinchSelectionEnd = 0;
   const MIN_VIEW_SPAN = 0.25;
 
   function zoomWave(factor, clientX){
@@ -77,6 +129,7 @@
     let moved = false;
 
     const move = ev => {
+      if (pinchActive){ moved = true; return; }
       if (Math.abs(ev.clientX - startX) > 4) moved = true;
     };
     const up = ev => {
@@ -84,7 +137,7 @@
       canvas.removeEventListener('pointermove', move);
       canvas.removeEventListener('pointerup', up);
       canvas.removeEventListener('pointercancel', up);
-      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
+      if (!pinchActive && !moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
     };
 
     canvas.addEventListener('pointermove', move);
@@ -104,12 +157,23 @@
 
   waveBox.addEventListener('pointerdown', e => {
     if (!duration || e.pointerType !== 'touch') return;
+    if (zoomPointers.size >= 2){
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
     zoomPointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    if (zoomPointers.size === 1){
+      pinchSelectionStart = selStart;
+      pinchSelectionEnd = selEnd;
+    }
     if (zoomPointers.size === 2){
       pinchActive = true;
       pinchStartDistance = Math.max(1, pointerDistance());
       pinchStartSpan = viewSpan();
       pinchAnchorTime = timeAtClientX(pointerMidX());
+      setSelection(pinchSelectionStart, pinchSelectionEnd, 'pinch');
       e.preventDefault();
       e.stopPropagation();
     }
@@ -122,8 +186,6 @@
     point.y = e.clientY;
     if (!pinchActive || zoomPointers.size < 2) return;
 
-    e.preventDefault();
-    e.stopPropagation();
     const distance = Math.max(1, pointerDistance());
     const midpoint = pointerMidX();
     const r = waveBox.getBoundingClientRect();
@@ -139,15 +201,11 @@
 
   function endZoomPointer(e){
     if (!zoomPointers.has(e.pointerId)) return;
-    if (pinchActive){
-      e.preventDefault();
-      e.stopPropagation();
-    }
     zoomPointers.delete(e.pointerId);
     if (zoomPointers.size === 0){
-      pinchActive = false;
       pinchStartDistance = 0;
       pinchStartSpan = 0;
+      setTimeout(() => { if (zoomPointers.size === 0) pinchActive = false; }, 0);
     }
   }
   waveBox.addEventListener('pointerup', endZoomPointer, true);
@@ -161,8 +219,8 @@
     zoomWave(Math.exp(e.deltaY * intensity), e.clientX);
   }, { passive:false });`;
 
-  if (!source.includes(oldBlock)) throw new Error('No se encontró la sección de la onda que debía actualizarse.');
-  const patched = source.replace(oldBlock, zoomBlock);
+  patched = replaceOnce(patched, oldBlock, zoomBlock, 'interacción de la onda');
+
   document.open();
   document.write(patched);
   document.close();
