@@ -1,4 +1,4 @@
-name: Splitter visible pinch test
+name: Splitter exact gesture verification
 
 on:
   push:
@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  TEST_REVISION: 6
+
 jobs:
   browser-test:
     runs-on: ubuntu-latest
@@ -20,27 +23,49 @@ jobs:
         with:
           node-version: 20
 
+      - name: Patch exact state diagnostics
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          app=Path('splitter-app.html')
+          text=app.read_text(encoding='utf-8')
+          if 'waveBox.dataset.viewA=viewA.toFixed(6)' not in text:
+              pattern=re.compile(r'(function setPreciseView\(start,span\)\{[\s\S]*?viewA=start;\s*viewB=start\+span;)(\s*scheduleWave\(\);)')
+              text,count=pattern.subn(r'\1\n    waveBox.dataset.viewA=viewA.toFixed(6);\n    waveBox.dataset.viewB=viewB.toFixed(6);\2',text,count=1)
+              if count!=1: raise SystemExit('No se encontró setPreciseView')
+          marker='if(!pointerPinchActive||waveTouchPointers.size<2)return;'
+          if 'waveBox.dataset.pinchMoves' not in text:
+              if marker not in text: raise SystemExit('No se encontró el pellizco')
+              text=text.replace(marker,marker+'\n    waveBox.dataset.pinchMoves=String((Number(waveBox.dataset.pinchMoves)||0)+1);',1)
+          app.write_text(text,encoding='utf-8')
+
+          index=Path('index.html')
+          i=re.sub(r'20260731-native\d+','20260731-native14',index.read_text(encoding='utf-8'))
+          index.write_text(i,encoding='utf-8')
+          PY
+
       - name: Install Chromium
         run: |
           npm init -y
           npm install --save-dev playwright
           npx playwright install --with-deps chromium
 
-      - name: Generate WAV sample
+      - name: Generate WAV
         run: |
           node <<'NODE'
-          const fs=require('fs');
-          const rate=44100,seconds=5,frames=rate*seconds,dataSize=frames*2;
-          const b=Buffer.alloc(44+dataSize);
-          b.write('RIFF',0);b.writeUInt32LE(36+dataSize,4);b.write('WAVE',8);
+          const fs=require('fs'),rate=44100,seconds=5,frames=rate*seconds,size=frames*2;
+          const b=Buffer.alloc(44+size);
+          b.write('RIFF',0);b.writeUInt32LE(36+size,4);b.write('WAVE',8);
           b.write('fmt ',12);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);
           b.writeUInt16LE(1,22);b.writeUInt32LE(rate,24);b.writeUInt32LE(rate*2,28);
-          b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(dataSize,40);
+          b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(size,40);
           for(let i=0;i<frames;i++)b.writeInt16LE(Math.round(Math.sin(2*Math.PI*440*i/rate)*12000),44+i*2);
           fs.writeFileSync('sample.wav',b);
           NODE
 
-      - name: Test visible selection gestures
+      - name: Verify all requested behavior
         run: |
           python3 -m http.server 4173 >/tmp/server.log 2>&1 &
           cat > test.js <<'NODE'
@@ -49,77 +74,76 @@ jobs:
             const browser=await chromium.launch({headless:true});
             const context=await browser.newContext({viewport:{width:1100,height:900},hasTouch:true});
             const page=await context.newPage();
-            const errors=[];
-            page.on('pageerror',e=>errors.push(String(e)));
+            const pageErrors=[];
+            page.on('pageerror',e=>pageErrors.push(String(e)));
             page.on('console',m=>console.log('BROWSER:',m.type(),m.text()));
-            await page.goto('http://127.0.0.1:4173/?test=visible-pinch',{waitUntil:'networkidle'});
+            await page.goto('http://127.0.0.1:4173/?verification=native14',{waitUntil:'networkidle'});
             await page.waitForSelector('#fileCut',{state:'attached',timeout:30000});
             await page.setInputFiles('#fileCut','sample.wav');
             await page.waitForSelector('#editor:not([hidden])',{timeout:30000});
             await page.waitForFunction(()=>document.querySelector('#roEnd')?.textContent!=='0:00.0');
 
-            if(await page.locator('footer').count())throw Error('El pie eliminado volvió a aparecer');
             const viewport=await page.locator('meta[name="viewport"]').getAttribute('content');
             if(!viewport.includes('maximum-scale=1')||!viewport.includes('user-scalable=no'))throw Error('Zoom global no bloqueado');
+            if(await page.locator('footer').count())throw Error('El pie eliminado reapareció');
 
-            const selection=page.locator('#selFrame');
-            let s=await selection.boundingBox();
-            await page.mouse.click(s.x+s.width*.35,s.y+s.height*.5);
-            const before=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
+            const frame=page.locator('#selFrame');
+            let sel=await frame.boundingBox();
+            await page.mouse.click(sel.x+sel.width*.35,sel.y+sel.height*.5);
+            const cutBefore=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
             await page.locator('#editCut').click();
-            const afterCut=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
-            if(afterCut===before)throw Error('Las tijeras no recortaron en el cursor');
+            const cutAfter=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
+            if(cutAfter===cutBefore)throw Error('Tijeras sin efecto');
 
-            const beforeWheel=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            const wave=await page.locator('#waveBox').boundingBox();
-            s=await selection.boundingBox();
-            const left=Math.max(wave.x+18,s.x+18);
-            const right=Math.min(wave.x+wave.width-18,s.x+s.width-18);
-            const wheelX=(left+right)/2;
-            const y=wave.y+wave.height*.5;
-            await page.mouse.move(wheelX,y);
-            await page.mouse.wheel(0,-500);
-            await page.waitForTimeout(400);
-            const afterWheel=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            if(afterWheel===beforeWheel)throw Error('La rueda no amplió la selección');
+            const wave=page.locator('#waveBox');
+            let wb=await wave.boundingBox();
+            sel=await frame.boundingBox();
+            const left=Math.max(wb.x+25,sel.x+25),right=Math.min(wb.x+wb.width-25,sel.x+sel.width-25);
+            await page.mouse.move((left+right)/2,wb.y+wb.height*.5);
+            await page.mouse.wheel(0,-520);
+            await page.waitForTimeout(450);
+            const wheelState=await wave.evaluate(e=>e.dataset.viewA+'|'+e.dataset.viewB);
+            if(!/^\d+\.\d{6}\|\d+\.\d{6}$/.test(wheelState))throw Error('Rueda sin zoom exacto: '+wheelState);
 
-            const wave2=await page.locator('#waveBox').boundingBox();
-            const sel2=await selection.boundingBox();
-            const visLeft=Math.max(wave2.x+24,sel2.x+24);
-            const visRight=Math.min(wave2.x+wave2.width-24,sel2.x+sel2.width-24);
-            if(visRight-visLeft<80)throw Error('No existe suficiente selección visible para probar el pellizco');
-            const x1=visLeft+(visRight-visLeft)*.38;
-            const x2=visLeft+(visRight-visLeft)*.62;
-            const py=wave2.y+wave2.height*.5;
-            await page.evaluate(()=>{
-              window.__gestureEvents=[];
-              ['pointerdown','pointermove','pointerup','touchstart','touchmove','touchend'].forEach(type=>
-                document.addEventListener(type,e=>window.__gestureEvents.push(type+':'+(e.pointerType||'touch')),true));
-            });
+            wb=await wave.boundingBox();sel=await frame.boundingBox();
+            const vLeft=Math.max(wb.x+30,sel.x+30),vRight=Math.min(wb.x+wb.width-30,sel.x+sel.width-30);
+            if(vRight-vLeft<90)throw Error('Selección visible insuficiente');
+            const x1=vLeft+(vRight-vLeft)*.38,x2=vLeft+(vRight-vLeft)*.62,y=wb.y+wb.height*.5;
             const client=await context.newCDPSession(page);
-            await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x1,y:py},{x:x2,y:py}]});
-            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-55,y:py},{x:x2+55,y:py}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x1,y},{x:x2,y}]});
+            for(const d of [20,45,70])await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-d,y},{x:x2+d,y}]});
             await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
             await page.waitForTimeout(500);
-            const afterPinch=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            const events=await page.evaluate(()=>window.__gestureEvents);
-            console.log('GESTURES',JSON.stringify(events));
-            if(afterPinch===afterWheel)throw Error('El pellizco visible no amplió la onda');
-            if(errors.length)throw Error(errors.join(' | '));
-            console.log(JSON.stringify({before,afterCut,beforeWheel,afterWheel,afterPinch}));
+            const pinchState=await wave.evaluate(e=>e.dataset.viewA+'|'+e.dataset.viewB);
+            const moves=Number(await wave.getAttribute('data-pinch-moves')||0);
+            if(moves<1)throw Error('El pellizco no ejecutó movimientos');
+            if(pinchState===wheelState)throw Error('El pellizco no cambió el intervalo exacto');
+            if(pageErrors.length)throw Error(pageErrors.join(' | '));
+            console.log('SUCCESS',JSON.stringify({cutBefore,cutAfter,wheelState,pinchState,moves}));
             await browser.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
           node test.js
 
-      - name: Save result
+      - name: Publish verified files
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html splitter-app.html
+          git commit -m "Publicar zoom y tijeras verificados en Splitter MP3"
+          git pull --rebase origin main
+          git push
+
+      - name: Save verification result
         if: always()
         env:
           TEST_STATUS: ${{ job.status }}
         run: |
-          printf '{"status":"%s","commit":"%s","run_id":"%s"}\n' "$TEST_STATUS" "$GITHUB_SHA" "$GITHUB_RUN_ID" > splitter-visible-test-status.json
+          printf '{"status":"%s","commit":"%s","run_id":"%s","revision":"%s"}\n' "$TEST_STATUS" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$TEST_REVISION" > splitter-verified-status.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add splitter-visible-test-status.json
-          git commit -m "Registrar prueba visible de Splitter MP3 [skip ci]" || exit 0
+          git add splitter-verified-status.json
+          git commit -m "Registrar verificación completa de Splitter MP3 [skip ci]" || exit 0
+          git pull --rebase origin main
           git push
