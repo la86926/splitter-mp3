@@ -182,14 +182,23 @@
   .sel-frame:active{ cursor:grabbing; }
   .handle{
     position:absolute; top:-3px; bottom:-3px; width:22px;
-    background:var(--accent);
+    background:transparent;
     display:grid; place-items:center;
     touch-action:none; cursor:ew-resize; border:0;
   }
-  .handle:hover, .handle:focus-visible{ background:var(--accent-strong); }
+  .handle::before{
+    content:''; position:absolute; top:0; bottom:0; width:7px;
+    background:var(--accent); transition:background var(--dur) ease;
+  }
+  .handle:hover, .handle:focus-visible{ background:transparent; }
+  .handle:hover::before, .handle:focus-visible::before{ background:var(--accent-strong); }
   .handle.left{  border-radius:10px 0 0 10px; }
   .handle.right{ border-radius:0 10px 10px 0; }
-  .handle svg{ width:8px; height:16px; color:#fff; pointer-events:none; }
+  .handle.left::before{ right:0; border-radius:6px 0 0 6px; }
+  .handle.right::before{ left:0; border-radius:0 6px 6px 0; }
+  .handle svg{ position:absolute; z-index:1; width:4px; height:12px; color:#fff; pointer-events:none; }
+  .handle.left svg{ right:1px; }
+  .handle.right svg{ left:1px; }
 
   .time-tag{
     position:absolute; top:-34px; transform:translateX(-50%);
