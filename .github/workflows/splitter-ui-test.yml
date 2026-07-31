@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 env:
-  TEST_REVISION: 2
+  TEST_REVISION: 3
 
 jobs:
   browser-test:
@@ -60,12 +60,13 @@ jobs:
           const { chromium }=require('playwright');
           (async()=>{
             const browser=await chromium.launch({headless:true});
-            const page=await browser.newPage({viewport:{width:1100,height:900}});
+            const context=await browser.newContext({viewport:{width:1100,height:900},hasTouch:true});
+            const page=await context.newPage();
             const pageErrors=[];
             page.on('pageerror',e=>pageErrors.push(String(e)));
             page.on('console',m=>console.log('BROWSER:',m.type(),m.text()));
-            await page.goto('http://127.0.0.1:4173/?test=wavezoom8',{waitUntil:'networkidle'});
-            await page.waitForSelector('#fileCut',{timeout:30000});
+            await page.goto('http://127.0.0.1:4173/?test=native9',{waitUntil:'networkidle'});
+            await page.waitForSelector('#fileCut',{state:'attached',timeout:30000});
             await page.setInputFiles('#fileCut','sample.wav');
             await page.waitForSelector('#editor:not([hidden])',{timeout:30000});
             await page.waitForFunction(()=>document.querySelector('#roEnd')?.textContent!=='0:00.0');
@@ -93,11 +94,23 @@ jobs:
             await page.mouse.move(selected.x+selected.width*.5,selected.y+selected.height*.5);
             await page.mouse.wheel(0,-650);
             await page.waitForTimeout(500);
-            const rulerAfter=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            if(rulerAfter===rulerBefore)throw new Error('La rueda no hizo zoom sobre la zona seleccionada');
+            const rulerAfterWheel=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
+            if(rulerAfterWheel===rulerBefore)throw new Error('La rueda no hizo zoom sobre la zona seleccionada');
+
+            const selectedAfterWheel=await page.locator('#selFrame').boundingBox();
+            const client=await context.newCDPSession(page);
+            const y=selectedAfterWheel.y+selectedAfterWheel.height*.5;
+            const x1=selectedAfterWheel.x+selectedAfterWheel.width*.42;
+            const x2=selectedAfterWheel.x+selectedAfterWheel.width*.58;
+            await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x1,y},{x:x2,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-70,y},{x:x2+70,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+            await page.waitForTimeout(500);
+            const rulerAfterPinch=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
+            if(rulerAfterPinch===rulerAfterWheel)throw new Error('El pellizco no hizo zoom sobre la selección');
 
             if(pageErrors.length)throw new Error('Errores de página: '+pageErrors.join(' | '));
-            console.log(JSON.stringify({beforeStart,beforeEnd,afterStart,afterEnd,rulerBefore,rulerAfter}));
+            console.log(JSON.stringify({beforeStart,beforeEnd,afterStart,afterEnd,rulerBefore,rulerAfterWheel,rulerAfterPinch}));
             await browser.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
