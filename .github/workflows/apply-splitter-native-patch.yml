@@ -22,9 +22,10 @@ jobs:
 
       - name: Verify patch markers
         run: |
-          grep -q 'SPLITTER_NATIVE_PATCH_V2' splitter-app.html
-          grep -q 'SPLITTER_NATIVE_INTERACTION_V2' splitter-app.html
+          grep -q 'SPLITTER_NATIVE_PATCH_V3' splitter-app.html
+          grep -q 'SPLITTER_NATIVE_INTERACTION_V3' splitter-app.html
           grep -q 'SPLITTER_SCISSORS_TOOLBAR_V2' splitter-app.html
+          grep -q 'waveTouchPointers' splitter-app.html
           ! grep -q 'Todo el procesamiento ocurre' splitter-app.html
 
       - name: Commit native patch
@@ -32,6 +33,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html splitter-app.html
-          git commit -m "Integrar zoom y tijeras dentro de Splitter MP3" || exit 0
+          git commit -m "Integrar zoom multitáctil en Splitter MP3" || exit 0
           git pull --rebase origin main
           git push
