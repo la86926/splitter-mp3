@@ -1,0 +1,166 @@
+name: Finalize Splitter gestures
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/finalize-splitter-gestures.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Add precise zoom state
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          old="""    viewA=start;
+              viewB=start+span;
+              scheduleWave();"""
+          new="""    viewA=start;
+              viewB=start+span;
+              waveBox.dataset.viewA=viewA.toFixed(6);
+              waveBox.dataset.viewB=viewB.toFixed(6);
+              scheduleWave();"""
+
+          app=Path('splitter-app.html')
+          text=app.read_text(encoding='utf-8')
+          if old not in text:
+              raise SystemExit('No se encontró setPreciseView en splitter-app.html')
+          text=text.replace(old,new,1)
+          old_ruler="""    $('rulerStart').textContent = duration ? fmtTime(viewA, false) : '0:00';
+              $('rulerMid').textContent   = duration ? fmtTime(viewA + viewSpan()/2, false) : '—';
+              $('rulerEnd').textContent   = duration ? fmtTime(viewB, false) : '—';"""
+          new_ruler="""    const detailed=isZoomed();
+              $('rulerStart').textContent = duration ? fmtTime(viewA, detailed) : '0:00';
+              $('rulerMid').textContent   = duration ? fmtTime(viewA + viewSpan()/2, detailed) : '—';
+              $('rulerEnd').textContent   = duration ? fmtTime(viewB, detailed) : '—';"""
+          if old_ruler not in text:
+              raise SystemExit('No se encontró updateRuler')
+          text=text.replace(old_ruler,new_ruler,1)
+          app.write_text(text,encoding='utf-8')
+
+          script=Path('scripts/apply_splitter_patch.py')
+          s=script.read_text(encoding='utf-8')
+          if old not in s:
+              raise SystemExit('No se encontró setPreciseView en el parche')
+          s=s.replace(old,new,1).replace('20260731-native11','20260731-native12')
+          script.write_text(s,encoding='utf-8')
+
+          index=Path('index.html')
+          i=index.read_text(encoding='utf-8').replace('20260731-native11','20260731-native12')
+          index.write_text(i,encoding='utf-8')
+          PY
+
+      - name: Install Chromium
+        run: |
+          npm init -y
+          npm install --save-dev playwright
+          npx playwright install --with-deps chromium
+
+      - name: Generate WAV sample
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const rate=44100,seconds=5,frames=rate*seconds,size=frames*2;
+          const b=Buffer.alloc(44+size);
+          b.write('RIFF',0);b.writeUInt32LE(36+size,4);b.write('WAVE',8);
+          b.write('fmt ',12);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);
+          b.writeUInt16LE(1,22);b.writeUInt32LE(rate,24);b.writeUInt32LE(rate*2,28);
+          b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(size,40);
+          for(let i=0;i<frames;i++)b.writeInt16LE(Math.round(Math.sin(2*Math.PI*440*i/rate)*12000),44+i*2);
+          fs.writeFileSync('sample.wav',b);
+          NODE
+
+      - name: Verify scissors, wheel and pinch
+        run: |
+          python3 -m http.server 4173 >/tmp/server.log 2>&1 &
+          cat > test.js <<'NODE'
+          const {chromium}=require('playwright');
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const context=await browser.newContext({viewport:{width:1100,height:900},hasTouch:true});
+            const page=await context.newPage();
+            const errors=[];
+            page.on('pageerror',e=>errors.push(String(e)));
+            page.on('console',m=>console.log('BROWSER:',m.type(),m.text()));
+            await page.goto('http://127.0.0.1:4173/?test=native12',{waitUntil:'networkidle'});
+            await page.waitForSelector('#fileCut',{state:'attached',timeout:30000});
+            await page.setInputFiles('#fileCut','sample.wav');
+            await page.waitForSelector('#editor:not([hidden])',{timeout:30000});
+            await page.waitForFunction(()=>document.querySelector('#roEnd')?.textContent!=='0:00.0');
+
+            if(await page.locator('footer').count())throw Error('El texto eliminado reapareció');
+            const viewport=await page.locator('meta[name="viewport"]').getAttribute('content');
+            if(!viewport.includes('maximum-scale=1')||!viewport.includes('user-scalable=no'))throw Error('Zoom global no bloqueado');
+
+            const frame=page.locator('#selFrame');
+            let sel=await frame.boundingBox();
+            await page.mouse.click(sel.x+sel.width*.35,sel.y+sel.height*.5);
+            const cutBefore=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
+            await page.locator('#editCut').click();
+            const cutAfter=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
+            if(cutAfter===cutBefore)throw Error('Las tijeras no recortaron en el cursor vertical');
+
+            const wave=page.locator('#waveBox');
+            let wb=await wave.boundingBox();
+            sel=await frame.boundingBox();
+            const left=Math.max(wb.x+20,sel.x+20);
+            const right=Math.min(wb.x+wb.width-20,sel.x+sel.width-20);
+            await page.mouse.move((left+right)/2,wb.y+wb.height*.5);
+            await page.mouse.wheel(0,-500);
+            await page.waitForTimeout(400);
+            const wheelState=await wave.evaluate(e=>e.dataset.viewA+'|'+e.dataset.viewB);
+            if(wheelState==='undefined|undefined'||wheelState==='|')throw Error('La rueda no actualizó el intervalo visible');
+
+            wb=await wave.boundingBox();
+            sel=await frame.boundingBox();
+            const visibleLeft=Math.max(wb.x+25,sel.x+25);
+            const visibleRight=Math.min(wb.x+wb.width-25,sel.x+sel.width-25);
+            if(visibleRight-visibleLeft<80)throw Error('No hay selección visible suficiente');
+            const x1=visibleLeft+(visibleRight-visibleLeft)*.38;
+            const x2=visibleLeft+(visibleRight-visibleLeft)*.62;
+            const y=wb.y+wb.height*.5;
+            const client=await context.newCDPSession(page);
+            await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x1,y},{x:x2,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-25,y},{x:x2+25,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-50,y},{x:x2+50,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-75,y},{x:x2+75,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+            await page.waitForTimeout(500);
+            const pinchState=await wave.evaluate(e=>e.dataset.viewA+'|'+e.dataset.viewB);
+            if(pinchState===wheelState)throw Error('El pellizco no cambió el intervalo visible');
+            if(errors.length)throw Error(errors.join(' | '));
+            console.log(JSON.stringify({cutBefore,cutAfter,wheelState,pinchState}));
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          node test.js
+
+      - name: Commit verified patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html splitter-app.html scripts/apply_splitter_patch.py
+          git commit -m "Publicar zoom preciso verificado en Splitter MP3"
+          git pull --rebase origin main
+          git push
+
+      - name: Save success result
+        run: |
+          printf '{"status":"success","commit":"%s","run_id":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > splitter-final-test-status.json
+          git add splitter-final-test-status.json
+          git commit -m "Registrar prueba final de Splitter MP3 [skip ci]"
+          git pull --rebase origin main
+          git push
