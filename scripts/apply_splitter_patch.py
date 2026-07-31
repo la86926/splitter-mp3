@@ -15,7 +15,7 @@ source = re.sub(
 source = re.sub(r'\s*<footer>[\s\S]*?</footer>', '', source, count=1, flags=re.I)
 
 css = r'''
-  /* SPLITTER_NATIVE_PATCH_V2 */
+  /* SPLITTER_NATIVE_PATCH_V3 */
   html,body{overscroll-behavior:none!important}
   body{touch-action:pan-y!important}
   .wave-box,#waveCanvas,.sel-frame,.handle,.playhead{touch-action:none!important}
@@ -27,16 +27,18 @@ css = r'''
   .editor-tool.danger{color:#d34b3f}
   .editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 '''
-if 'SPLITTER_NATIVE_PATCH_V2' not in source:
+if 'SPLITTER_NATIVE_PATCH_V3' not in source:
     source = source.replace('</style>', css + '\n</style>', 1)
 
-if 'SPLITTER_NATIVE_INTERACTION_V2' not in source:
-    interaction_start = source.find('  /* ---- Interacción sobre la onda:')
+if 'SPLITTER_NATIVE_INTERACTION_V3' not in source:
+    interaction_start = source.find('  /* SPLITTER_NATIVE_INTERACTION_V2 */')
+    if interaction_start < 0:
+        interaction_start = source.find('  /* ---- Interacción sobre la onda:')
     reproduction_start = source.find('  /* ---- Reproducción ---- */', interaction_start)
     if interaction_start < 0 or reproduction_start < 0:
-        raise RuntimeError('No se encontró el bloque original de interacción de la onda')
+        raise RuntimeError('No se encontró el bloque de interacción de la onda')
 
-    interaction = r'''  /* SPLITTER_NATIVE_INTERACTION_V2 */
+    interaction = r'''  /* SPLITTER_NATIVE_INTERACTION_V3 */
   /* ---- Interacción precisa sobre toda la onda, incluida la selección ---- */
   document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
   document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});
@@ -59,7 +61,9 @@ if 'SPLITTER_NATIVE_INTERACTION_V2' not in source:
     if(!duration)return;
     span=clamp(span,preciseMinSpan(),duration);
     start=clamp(start,0,Math.max(0,duration-span));
-    viewA=start;viewB=start+span;scheduleWave();
+    viewA=start;
+    viewB=start+span;
+    scheduleWave();
   }
   function zoomWaveAt(clientX,factor){
     if(!duration||!isFinite(factor)||factor<=0)return;
@@ -71,11 +75,13 @@ if 'SPLITTER_NATIVE_INTERACTION_V2' not in source:
     setPreciseView(anchor-ratio*newSpan,newSpan);
   }
 
+  /* Un clic o toque breve coloca el cursor vertical. */
   canvas.addEventListener('pointerdown',e=>{
-    if(!duration||!e.isPrimary)return;
+    if(!duration||!e.isPrimary||e.pointerType==='touch')return;
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
-    const startX=e.clientX;let moved=false;
+    const startX=e.clientX;
+    let moved=false;
     const move=ev=>{if(Math.abs(ev.clientX-startX)>4)moved=true};
     const up=ev=>{
       try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
@@ -89,47 +95,90 @@ if 'SPLITTER_NATIVE_INTERACTION_V2' not in source:
     canvas.addEventListener('pointercancel',up);
   });
 
+  /* La rueda amplía aunque el puntero esté sobre la selección, un asa o el cursor. */
   waveBox.addEventListener('wheel',e=>{
     if(!duration)return;
-    e.preventDefault();e.stopImmediatePropagation();
+    e.preventDefault();
+    e.stopImmediatePropagation();
     zoomWaveAt(e.clientX,Math.exp(e.deltaY*.0024));
   },{passive:false,capture:true});
 
-  let pinchActive=false,pinchStartDistance=0,pinchStartSpan=0,pinchAnchorTime=0;
-  function touchDistance(t){const a=t[0],b=t[1];return Math.hypot(b.clientX-a.clientX,b.clientY-a.clientY)}
-  function touchMidX(t){return (t[0].clientX+t[1].clientX)/2}
+  /* Pellizco multitáctil basado en Pointer Events. */
+  const waveTouchPointers=new Map();
+  let pointerPinchActive=false;
+  let pointerPinchDistance0=0;
+  let pointerPinchSpan0=0;
+  let pointerPinchAnchor=0;
+  let singleTouchStart=null;
 
-  waveBox.addEventListener('touchstart',e=>{
-    if(!duration||e.touches.length<2)return;
-    e.preventDefault();e.stopImmediatePropagation();
-    pinchActive=true;
-    pinchStartDistance=Math.max(1,touchDistance(e.touches));
-    pinchStartSpan=viewSpan();
-    pinchAnchorTime=timeAtClientX(touchMidX(e.touches));
-  },{passive:false,capture:true});
-  waveBox.addEventListener('touchmove',e=>{
-    if(!pinchActive||e.touches.length<2)return;
-    e.preventDefault();e.stopImmediatePropagation();
-    const distance=Math.max(1,touchDistance(e.touches));
-    const midpoint=touchMidX(e.touches);
+  function pointerPair(){return [...waveTouchPointers.values()].slice(0,2)}
+  function pointerPairDistance(){
+    const p=pointerPair();
+    return p.length<2?0:Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y);
+  }
+  function pointerPairMidX(){
+    const p=pointerPair();
+    return p.length<2?0:(p[0].x+p[1].x)/2;
+  }
+
+  waveBox.addEventListener('pointerdown',e=>{
+    if(!duration||e.pointerType!=='touch')return;
+    waveTouchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(waveTouchPointers.size===1){
+      singleTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false};
+    }
+    if(waveTouchPointers.size>=2){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      pointerPinchActive=true;
+      singleTouchStart=null;
+      pointerPinchDistance0=Math.max(1,pointerPairDistance());
+      pointerPinchSpan0=viewSpan();
+      pointerPinchAnchor=timeAtClientX(pointerPairMidX());
+    }
+  },true);
+
+  waveBox.addEventListener('pointermove',e=>{
+    if(e.pointerType!=='touch'||!waveTouchPointers.has(e.pointerId))return;
+    const p=waveTouchPointers.get(e.pointerId);
+    p.x=e.clientX;
+    p.y=e.clientY;
+    if(singleTouchStart&&singleTouchStart.id===e.pointerId){
+      if(Math.hypot(e.clientX-singleTouchStart.x,e.clientY-singleTouchStart.y)>5)singleTouchStart.moved=true;
+    }
+    if(!pointerPinchActive||waveTouchPointers.size<2)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const distance=Math.max(1,pointerPairDistance());
+    const midpoint=pointerPairMidX();
     const rect=waveBox.getBoundingClientRect();
     const ratio=clamp((midpoint-rect.left)/Math.max(1,rect.width),0,1);
-    const span=clamp(pinchStartSpan*pinchStartDistance/distance,preciseMinSpan(),duration);
-    setPreciseView(pinchAnchorTime-ratio*span,span);
-  },{passive:false,capture:true});
-  function finishPinch(e){
-    if(!pinchActive)return;
-    e.preventDefault();e.stopImmediatePropagation();
-    if(e.touches.length<2)pinchActive=false;
+    const span=clamp(pointerPinchSpan0*pointerPinchDistance0/distance,preciseMinSpan(),duration);
+    setPreciseView(pointerPinchAnchor-ratio*span,span);
+  },true);
+
+  function endWaveTouchPointer(e){
+    if(e.pointerType!=='touch'||!waveTouchPointers.has(e.pointerId))return;
+    const wasPinching=pointerPinchActive;
+    const wasSingle=waveTouchPointers.size===1;
+    if(wasPinching){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+    waveTouchPointers.delete(e.pointerId);
+    if(wasSingle&&singleTouchStart&&singleTouchStart.id===e.pointerId&&!singleTouchStart.moved&&e.type==='pointerup'){
+      seekTo(timeAtClientX(e.clientX));
+    }
+    if(waveTouchPointers.size<2)pointerPinchActive=false;
+    if(waveTouchPointers.size===1){
+      const [id,p]=[...waveTouchPointers.entries()][0];
+      singleTouchStart={id,x:p.x,y:p.y,moved:true};
+    }else if(waveTouchPointers.size===0){
+      singleTouchStart=null;
+    }
   }
-  waveBox.addEventListener('touchend',finishPinch,{passive:false,capture:true});
-  waveBox.addEventListener('touchcancel',finishPinch,{passive:false,capture:true});
-  waveBox.addEventListener('pointermove',e=>{
-    if(pinchActive&&e.pointerType==='touch'){e.preventDefault();e.stopImmediatePropagation()}
-  },true);
-  waveBox.addEventListener('pointerup',e=>{
-    if(pinchActive&&e.pointerType==='touch'){e.preventDefault();e.stopImmediatePropagation()}
-  },true);
+  waveBox.addEventListener('pointerup',endWaveTouchPointer,true);
+  waveBox.addEventListener('pointercancel',endWaveTouchPointer,true);
 
 '''
     source = source[:interaction_start] + interaction + source[reproduction_start:]
@@ -160,40 +209,51 @@ if 'SPLITTER_SCISSORS_TOOLBAR_V2' not in source:
     const snap=selectionSnapshot();
     if(!sameSelection(undoSelections[undoSelections.length-1],snap))undoSelections.push(snap);
     if(undoSelections.length>50)undoSelections.shift();
-    redoSelections.length=0;refreshEditButtons();
+    redoSelections.length=0;
+    refreshEditButtons();
   }
   function applySelectionSnapshot(snap){
     if(!snap)return;
     setSelection(snap[0],snap[1],'history');
     posCursor=clamp(posCursor,selStart,selEnd);
-    showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+    showCursorUI();
+    updatePlayheadUI(posCursor);
+    refreshEditButtons();
   }
   editUndo.addEventListener('click',()=>{
     if(!undoSelections.length)return;
-    redoSelections.push(selectionSnapshot());applySelectionSnapshot(undoSelections.pop());
+    redoSelections.push(selectionSnapshot());
+    applySelectionSnapshot(undoSelections.pop());
   });
   editRedo.addEventListener('click',()=>{
     if(!redoSelections.length)return;
-    undoSelections.push(selectionSnapshot());applySelectionSnapshot(redoSelections.pop());
+    undoSelections.push(selectionSnapshot());
+    applySelectionSnapshot(redoSelections.pop());
   });
   editCut.addEventListener('click',()=>{
     if(!duration)return;
     if(playMode)pausePreview();
     const t=clamp(posCursor,selStart,selEnd);
     if(t<=selStart+MIN_GAP||t>=selEnd-MIN_GAP){
-      toast('Coloca el cursor vertical dentro de la selección.');return;
+      toast('Coloca el cursor vertical dentro de la selección.');
+      return;
     }
     rememberBeforeEdit();
     const left=t-selStart,right=selEnd-t;
     if(left<=right)setSelection(t,selEnd,'scissors');
     else setSelection(selStart,t,'scissors');
-    posCursor=t;showCursorUI();updatePlayheadUI(posCursor);
+    posCursor=t;
+    showCursorUI();
+    updatePlayheadUI(posCursor);
     toast('Recorte ajustado exactamente en '+fmtTime(t,true)+'.');
   });
   editDelete.addEventListener('click',()=>{
     if(!duration)return;
-    rememberBeforeEdit();setSelection(0,duration,'clear');
-    posCursor=0;showCursorUI();updatePlayheadUI(0);
+    rememberBeforeEdit();
+    setSelection(0,duration,'clear');
+    posCursor=0;
+    showCursorUI();
+    updatePlayheadUI(0);
   });
   refreshEditButtons();
 
@@ -215,7 +275,7 @@ index = '''<!DOCTYPE html>
 <div id="loader">Abriendo Splitter MP3…</div>
 <script>
 (async()=>{
-  const response=await fetch('./splitter-app.html?v=20260731-native10',{cache:'no-store'});
+  const response=await fetch('./splitter-app.html?v=20260731-native11',{cache:'no-store'});
   if(!response.ok)throw new Error('No se pudo cargar Splitter MP3.');
   const source=await response.text();
   document.open();document.write(source);document.close();
