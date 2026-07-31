@@ -1039,7 +1039,7 @@
         else                  setSelection(selStart, Math.max(t, selStart + MIN_GAP), 'right');
       };
       const up = ev => {
-        el.releasePointerCapture(e.pointerId);
+        try{el.releasePointerCapture(e.pointerId)}catch(_){}
         el.removeEventListener('pointermove', move);
         el.removeEventListener('pointerup', up);
         el.removeEventListener('pointercancel', up);
@@ -1080,7 +1080,7 @@
       setSelection(a, a + len, 'frame');
     };
     const up = ev => {
-      el.releasePointerCapture(e.pointerId);
+      try{el.releasePointerCapture(e.pointerId)}catch(_){}
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
@@ -1117,6 +1117,8 @@
     start=clamp(start,0,Math.max(0,duration-span));
     viewA=start;
     viewB=start+span;
+    waveBox.dataset.viewA=viewA.toFixed(6);
+    waveBox.dataset.viewB=viewB.toFixed(6);
     scheduleWave();
   }
   function zoomWaveAt(clientX,factor){
@@ -1201,6 +1203,7 @@
       if(Math.hypot(e.clientX-singleTouchStart.x,e.clientY-singleTouchStart.y)>5)singleTouchStart.moved=true;
     }
     if(!pointerPinchActive||waveTouchPointers.size<2)return;
+    waveBox.dataset.pinchMoves=String((Number(waveBox.dataset.pinchMoves)||0)+1);
     e.preventDefault();
     e.stopImmediatePropagation();
     const distance=Math.max(1,pointerPairDistance());
@@ -1371,7 +1374,7 @@
     el.setPointerCapture(e.pointerId);
     const move = ev => { seekTo(timeAtClientX(ev.clientX)); };
     const up = () => {
-      el.releasePointerCapture(e.pointerId);
+      try{el.releasePointerCapture(e.pointerId)}catch(_){}
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
