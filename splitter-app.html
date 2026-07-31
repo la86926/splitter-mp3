@@ -183,22 +183,14 @@
   .handle{
     position:absolute; top:-3px; bottom:-3px; width:22px;
     background:transparent;
-    display:grid; place-items:center;
-    touch-action:none; cursor:ew-resize; border:0;
+    touch-action:none; cursor:default; border:0; user-select:none;
   }
   .handle::before{
-    content:''; position:absolute; top:0; bottom:0; width:7px;
-    background:var(--accent); transition:background var(--dur) ease;
+    content:''; position:absolute; top:0; bottom:0; width:3px;
+    background:var(--accent); border-radius:2px;
   }
-  .handle:hover, .handle:focus-visible{ background:transparent; }
-  .handle:hover::before, .handle:focus-visible::before{ background:var(--accent-strong); }
-  .handle.left{  border-radius:10px 0 0 10px; }
-  .handle.right{ border-radius:0 10px 10px 0; }
-  .handle.left::before{ right:0; border-radius:6px 0 0 6px; }
-  .handle.right::before{ left:0; border-radius:0 6px 6px 0; }
-  .handle svg{ position:absolute; z-index:1; width:4px; height:12px; color:#fff; pointer-events:none; }
-  .handle.left svg{ right:1px; }
-  .handle.right svg{ left:1px; }
+  .handle.left::before{ right:0; }
+  .handle.right::before{ left:0; }
 
   .time-tag{
     position:absolute; top:-34px; transform:translateX(-50%);
@@ -507,12 +499,8 @@
             <div class="dim-right" id="dimR"></div>
             <div class="playhead"  id="playhead"></div>
             <div class="sel-frame" id="selFrame" title="Arrastra para mover la selección"></div>
-            <button type="button" class="handle left"  id="hL" role="slider" aria-label="Inicio del recorte" aria-valuemin="0" aria-valuenow="0">
-              <svg viewBox="0 0 8 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 2 2 8l4 6"/></svg>
-            </button>
-            <button type="button" class="handle right" id="hR" role="slider" aria-label="Fin del recorte" aria-valuemin="0" aria-valuenow="0">
-              <svg viewBox="0 0 8 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l4 6-4 6"/></svg>
-            </button>
+            <div class="handle left" id="hL" aria-hidden="true"></div>
+            <div class="handle right" id="hR" aria-hidden="true"></div>
             <div class="time-tag" id="tagL">0:00.0</div>
             <div class="time-tag" id="tagR">0:00.0</div>
             <div class="time-tag pos" id="tagP" style="display:none">0:00.0</div>
@@ -975,8 +963,6 @@
     selStart = 0;
     selEnd = duration || 0;
     $('fMeta').textContent = fmtSize(file.size) + (duration ? ' · ' + fmtTime(duration, true) : '');
-    $('hL').setAttribute('aria-valuemax', String(duration));
-    $('hR').setAttribute('aria-valuemax', String(duration));
 
     posCursor = 0;
     resetView();
@@ -1161,8 +1147,6 @@
     tagR.textContent = fmtTime(selEnd, true);
     if (Math.abs(xR - xL) < 92){ tagL.style.top = '-58px'; } else { tagL.style.top = '-34px'; }
 
-    $('hL').setAttribute('aria-valuenow', selStart.toFixed(1));
-    $('hR').setAttribute('aria-valuenow', selEnd.toFixed(1));
     layoutClipSegments();
   }
 
@@ -1344,49 +1328,11 @@
     );
   }
 
-  /* ---- Arrastre de asas y del marco ---- */
+  /* ---- Los límites son sólo marcadores; el marco mueve el cursor ---- */
   function timeAtClientX(clientX){
     const r = waveBox.getBoundingClientRect();
     return viewA + clamp((clientX - r.left) / r.width, 0, 1) * viewSpan();
   }
-  function dragHandle(el, side){
-    el.addEventListener('pointerdown', e => {
-      if (!duration || touchReservedForPinch(e)) return;
-      e.preventDefault();
-      el.setPointerCapture(e.pointerId);
-      const startX = e.clientX;
-      const startA = selStart, startB = selEnd;
-      const rect = waveBox.getBoundingClientRect();
-      const move = ev => {
-        if (touchReservedForPinch(ev)) return;
-        const delta = ((ev.clientX - startX) / Math.max(1, rect.width)) * viewSpan();
-        if (side === 'left')  setSelection(Math.min(startA + delta, startB - MIN_GAP), startB, 'left');
-        else                  setSelection(startA, Math.max(startB + delta, startA + MIN_GAP), 'right');
-      };
-      const up = ev => {
-        try{el.releasePointerCapture(e.pointerId)}catch(_){}
-        el.removeEventListener('pointermove', move);
-        el.removeEventListener('pointerup', up);
-        el.removeEventListener('pointercancel', up);
-      };
-      el.addEventListener('pointermove', move);
-      el.addEventListener('pointerup', up);
-      el.addEventListener('pointercancel', up);
-    });
-    el.addEventListener('keydown', e => {
-      if (!duration) return;
-      const fine = e.shiftKey ? 1 : 0.1;
-      let d = 0;
-      if (e.key === 'ArrowLeft')  d = -fine;
-      if (e.key === 'ArrowRight') d =  fine;
-      if (!d) return;
-      e.preventDefault();
-      if (side === 'left')  setSelection(selStart + d, selEnd, 'left');
-      else                  setSelection(selStart, selEnd + d, 'right');
-    });
-  }
-  dragHandle($('hL'), 'left');
-  dragHandle($('hR'), 'right');
 
   $('selFrame').addEventListener('pointerdown', e => {
     if (!duration || touchReservedForPinch(e)) return;
