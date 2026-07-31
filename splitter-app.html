@@ -745,6 +745,37 @@
   function newClip(start, end){ return { id: ++clipSerial, start, end }; }
   function currentClip(){ return clips[activeClip] || null; }
   function keptDuration(){ return clips.reduce((sum, clip) => sum + Math.max(0, clip.end - clip.start), 0); }
+  function projectOffset(index){
+    let total = 0;
+    for (let i = 0; i < index; i++) total += Math.max(0, clips[i].end - clips[i].start);
+    return total;
+  }
+  function projectBounds(index){
+    const start = projectOffset(index);
+    const clip = clips[index];
+    return { start, end: start + (clip ? Math.max(0, clip.end - clip.start) : 0) };
+  }
+  function locateProjectTime(projectTime){
+    if (!clips.length) return null;
+    const total = keptDuration();
+    const target = clamp(projectTime, 0, Math.max(0, total - 0.001));
+    let offset = 0;
+    for (let index = 0; index < clips.length; index++){
+      const clip = clips[index];
+      const length = Math.max(0, clip.end - clip.start);
+      if (target < offset + length - 0.001 || index === clips.length - 1){
+        const local = clamp(target - offset, 0, Math.max(0, length - 0.001));
+        return { index, clip, projectTime: offset + local, sourceTime: clip.start + local };
+      }
+      offset += length;
+    }
+    return null;
+  }
+  function sourceToProject(index, sourceTime){
+    const clip = clips[index];
+    if (!clip) return 0;
+    return projectOffset(index) + clamp(sourceTime - clip.start, 0, Math.max(0, clip.end - clip.start));
+  }
   function clipIndexAtTime(t){
     for (let i = 0; i < clips.length; i++){
       const clip = clips[i];
@@ -914,11 +945,11 @@
 
   /* ---- Intervalo visible de la onda ---- */
   function viewSpan(){ return Math.max(0.001, viewB - viewA); }
-  function isZoomed(){ return duration > 0 && viewSpan() < duration - 0.001; }
+  function isZoomed(){ const total = keptDuration(); return total > 0 && viewSpan() < total - 0.001; }
 
   function resetView(){
     viewA = 0;
-    viewB = duration;
+    viewB = keptDuration();
     scheduleWave();
   }
 
@@ -938,15 +969,14 @@
   let peakVA = -1, peakVB = -1;
   function updateDispPeaks(){
     if (!audioBuf){ dispPeaks = null; return; }
-    if (!isZoomed()){ dispPeaks = peaks; peakVA = 0; peakVB = duration; return; }
-    if (dispPeaks && dispPeaks !== peaks && Math.abs(peakVA - viewA) < 1e-6 && Math.abs(peakVB - viewB) < 1e-6) return;
-    dispPeaks = computePeaksRange(audioBuf, viewA, viewB, 1200);
+    dispPeaks = peaks;
     peakVA = viewA; peakVB = viewB;
   }
   function updateRuler(){
-    $('rulerStart').textContent = duration ? fmtTime(viewA, false) : '0:00';
-    $('rulerMid').textContent   = duration ? fmtTime(viewA + viewSpan()/2, false) : '—';
-    $('rulerEnd').textContent   = duration ? fmtTime(viewB, false) : '—';
+    const total = keptDuration();
+    $('rulerStart').textContent = total ? fmtTime(viewA, false) : '0:00';
+    $('rulerMid').textContent   = total ? fmtTime(viewA + viewSpan()/2, false) : '—';
+    $('rulerEnd').textContent   = total ? fmtTime(viewB, false) : '—';
   }
 
   /* ---- Dibujo de la onda ---- */
@@ -984,9 +1014,11 @@
     const barW = Math.max(1, step * 0.62);
     const span = viewSpan();
     for (let i = 0; i < n; i++){
-      const amp = Math.max(0.025, dispPeaks[i]) * (H * 0.42);
-      const sampleTime = viewA + ((i + 0.5) / n) * span;
-      const clipIndex = clipIndexAtTime(sampleTime);
+      const projectTime = viewA + ((i + 0.5) / n) * span;
+      const located = locateProjectTime(projectTime);
+      const peakIndex = located && duration ? clamp(Math.floor((located.sourceTime / duration) * dispPeaks.length), 0, dispPeaks.length - 1) : i;
+      const amp = Math.max(0.025, dispPeaks[peakIndex] || 0) * (H * 0.42);
+      const clipIndex = located ? located.index : -1;
       ctx2d.fillStyle = clipIndex >= 0 ? acc : idle;
       ctx2d.globalAlpha = clipIndex === activeClip ? 1 : clipIndex >= 0 ? .55 : .42;
       const x = i * step + (step - barW) / 2;
@@ -1011,8 +1043,9 @@
     const w = waveBox.clientWidth;
     if (!w) return;
     const span = viewSpan() || 1;
-    const xLr = ((selStart - viewA) / span) * w;
-    const xRr = ((selEnd   - viewA) / span) * w;
+    const selected = projectBounds(activeClip);
+    const xLr = ((selected.start - viewA) / span) * w;
+    const xRr = ((selected.end   - viewA) / span) * w;
     const xL = clamp(xLr, 0, w);
     const xR = clamp(xRr, 0, w);
 
@@ -1051,9 +1084,10 @@
     const w = waveBox.clientWidth;
     const span = viewSpan() || 1;
     clips.forEach((clip, index) => {
-      if (clip.end < viewA || clip.start > viewB) return;
-      const left = clamp(((clip.start - viewA) / span) * w, 0, w);
-      const right = clamp(((clip.end - viewA) / span) * w, 0, w);
+      const bounds = projectBounds(index);
+      if (bounds.end < viewA || bounds.start > viewB) return;
+      const left = clamp(((bounds.start - viewA) / span) * w, 0, w);
+      const right = clamp(((bounds.end - viewA) / span) * w, 0, w);
       if (right - left < 1) return;
       const mark = document.createElement('div');
       mark.className = 'clip-segment-mark' + (index === activeClip ? ' active' : '');
@@ -1069,6 +1103,8 @@
   }
 
   function setSelection(a, b, source){
+    const oldTotal = keptDuration();
+    const wasFullView = oldTotal > 0 && viewSpan() >= oldTotal - 0.001;
     if (!duration) { selStart = a; selEnd = b; }
     else {
       const limits = clipLimits();
@@ -1082,6 +1118,12 @@
       selStart = a; selEnd = b;
       const clip = currentClip();
       if (clip){ clip.start = a; clip.end = b; }
+    }
+    const total = keptDuration();
+    if (wasFullView){ viewA = 0; viewB = total; }
+    else if (total > 0 && viewB > total){
+      const span = Math.min(viewSpan(), total);
+      viewB = total; viewA = Math.max(0, total - span);
     }
     syncAll(source);
   }
@@ -1115,7 +1157,8 @@
       if (duration){ a = clamp(a, 0, duration); b = clamp(b, 0, duration); }
       if (b <= a) b = a + MIN_GAP;
       setSelection(a, duration ? clamp(b, 0, duration) : b, 'inputs');
-      if (isZoomed() && (selStart < viewA - 0.001 || selEnd > viewB + 0.001)) resetView();
+      const bounds = projectBounds(activeClip);
+      if (isZoomed() && (bounds.start < viewA - 0.001 || bounds.end > viewB + 0.001)) resetView();
       writeHMS('s', selStart); writeHMS('e', selEnd);
     });
   });
@@ -1130,10 +1173,13 @@
       if (!duration) return;
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
+      const startX = e.clientX;
+      const startA = selStart, startB = selEnd;
+      const rect = waveBox.getBoundingClientRect();
       const move = ev => {
-        const t = timeAtClientX(ev.clientX);
-        if (side === 'left')  setSelection(Math.min(t, selEnd - MIN_GAP), selEnd, 'left');
-        else                  setSelection(selStart, Math.max(t, selStart + MIN_GAP), 'right');
+        const delta = ((ev.clientX - startX) / Math.max(1, rect.width)) * viewSpan();
+        if (side === 'left')  setSelection(Math.min(startA + delta, startB - MIN_GAP), startB, 'left');
+        else                  setSelection(startA, Math.max(startB + delta, startA + MIN_GAP), 'right');
       };
       const up = ev => {
         try{el.releasePointerCapture(e.pointerId)}catch(_){}
@@ -1167,22 +1213,17 @@
     el.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     let moved = false;
-    const t0 = timeAtClientX(e.clientX);
-    const a0 = selStart, len = selEnd - selStart;
     const move = ev => {
       if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
       moved = true;
-      const dt = timeAtClientX(ev.clientX) - t0;
-      const limits = clipLimits();
-      const a = clamp(a0 + dt, limits.min, Math.max(limits.min, limits.max - len));
-      setSelection(a, a + len, 'frame');
+      seekTo(timeAtClientX(ev.clientX));
     };
     const up = ev => {
       try{el.releasePointerCapture(e.pointerId)}catch(_){}
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
-      // toque sin arrastre: ubicar el cursor de reproducción en ese punto
+      // Toque o arrastre: recorrer libremente la línea de tiempo.
       if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
     };
     el.addEventListener('pointermove', move);
@@ -1208,11 +1249,12 @@
   },{passive:false,capture:true});
 
   const MIN_PRECISE_SPAN=.3;
-  function preciseMinSpan(){return duration?Math.min(MIN_PRECISE_SPAN,duration):MIN_PRECISE_SPAN}
+  function preciseMinSpan(){const total=keptDuration();return total?Math.min(MIN_PRECISE_SPAN,total):MIN_PRECISE_SPAN}
   function setPreciseView(start,span){
-    if(!duration)return;
-    span=clamp(span,preciseMinSpan(),duration);
-    start=clamp(start,0,Math.max(0,duration-span));
+    const total=keptDuration();
+    if(!total)return;
+    span=clamp(span,preciseMinSpan(),total);
+    start=clamp(start,0,Math.max(0,total-span));
     viewA=start;
     viewB=start+span;
     waveBox.dataset.viewA=viewA.toFixed(6);
@@ -1220,12 +1262,13 @@
     scheduleWave();
   }
   function zoomWaveAt(clientX,factor){
-    if(!duration||!isFinite(factor)||factor<=0)return;
+    const total=keptDuration();
+    if(!total||!isFinite(factor)||factor<=0)return;
     const rect=waveBox.getBoundingClientRect();
     const ratio=clamp((clientX-rect.left)/Math.max(1,rect.width),0,1);
     const oldSpan=viewSpan();
     const anchor=viewA+ratio*oldSpan;
-    const newSpan=clamp(oldSpan*factor,preciseMinSpan(),duration);
+    const newSpan=clamp(oldSpan*factor,preciseMinSpan(),total);
     setPreciseView(anchor-ratio*newSpan,newSpan);
   }
 
@@ -1236,7 +1279,9 @@
     canvas.setPointerCapture(e.pointerId);
     const startX=e.clientX;
     let moved=false;
-    const move=ev=>{if(Math.abs(ev.clientX-startX)>4)moved=true};
+    const move=ev=>{
+      if(Math.abs(ev.clientX-startX)>4){moved=true;seekTo(timeAtClientX(ev.clientX));}
+    };
     const up=ev=>{
       try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
       canvas.removeEventListener('pointermove',move);
@@ -1279,7 +1324,7 @@
     if(!duration||e.pointerType!=='touch')return;
     waveTouchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if(waveTouchPointers.size===1){
-      singleTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false};
+      singleTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false,blocked:!!e.target.closest('.handle,.playhead')};
     }
     if(waveTouchPointers.size>=2){
       e.preventDefault();
@@ -1298,7 +1343,10 @@
     p.x=e.clientX;
     p.y=e.clientY;
     if(singleTouchStart&&singleTouchStart.id===e.pointerId){
-      if(Math.hypot(e.clientX-singleTouchStart.x,e.clientY-singleTouchStart.y)>5)singleTouchStart.moved=true;
+      if(Math.hypot(e.clientX-singleTouchStart.x,e.clientY-singleTouchStart.y)>5){
+        singleTouchStart.moved=true;
+        if(!singleTouchStart.blocked&&!pointerPinchActive){e.preventDefault();seekTo(timeAtClientX(e.clientX));}
+      }
     }
     if(!pointerPinchActive||waveTouchPointers.size<2)return;
     waveBox.dataset.pinchMoves=String((Number(waveBox.dataset.pinchMoves)||0)+1);
@@ -1308,7 +1356,7 @@
     const midpoint=pointerPairMidX();
     const rect=waveBox.getBoundingClientRect();
     const ratio=clamp((midpoint-rect.left)/Math.max(1,rect.width),0,1);
-    const span=clamp(pointerPinchSpan0*pointerPinchDistance0/distance,preciseMinSpan(),duration);
+    const span=clamp(pointerPinchSpan0*pointerPinchDistance0/distance,preciseMinSpan(),keptDuration());
     setPreciseView(pointerPinchAnchor-ratio*span,span);
   },true);
 
@@ -1327,7 +1375,7 @@
     if(waveTouchPointers.size<2)pointerPinchActive=false;
     if(waveTouchPointers.size===1){
       const [id,p]=[...waveTouchPointers.entries()][0];
-      singleTouchStart={id,x:p.x,y:p.y,moved:true};
+      singleTouchStart={id,x:p.x,y:p.y,moved:true,blocked:true};
     }else if(waveTouchPointers.size===0){
       singleTouchStart=null;
     }
@@ -1347,12 +1395,13 @@
   }
   function updatePlayheadUI(t){
     const w = waveBox.clientWidth;
-    const x = clamp(((t - viewA) / viewSpan()) * w, 0, w);
+    const projectTime = sourceToProject(activeClip, t);
+    const x = clamp(((projectTime - viewA) / viewSpan()) * w, 0, w);
     $('playhead').style.left = x + 'px';
     const tag = $('tagP');
     tag.style.left = clamp(x, 30, w - 30) + 'px';
-    tag.textContent = fmtTime(t, true);
-    $('roPos').textContent = fmtTime(t, true);
+    tag.textContent = fmtTime(projectTime, true);
+    $('roPos').textContent = fmtTime(projectTime, true);
   }
 
   // Pausa: se detiene EXACTAMENTE donde va sonando; al reanudar continúa desde ahí
@@ -1443,12 +1492,12 @@
   }
 
   // Mover el cursor para adelantar o atrasar (sonando o en pausa)
-  function seekTo(t){
+  function seekTo(projectTime){
     if (!duration) return;
-    const index = nearestClipIndex(t);
-    if (index < 0) return;
-    const clip = clips[index];
-    t = clamp(t, clip.start, Math.max(clip.start, clip.end - 0.02));
+    const located = locateProjectTime(projectTime);
+    if (!located) return;
+    const index = located.index, clip = located.clip;
+    const t = clamp(located.sourceTime, clip.start, Math.max(clip.start, clip.end - 0.02));
     if (index !== activeClip){
       activeClip = index;
       selStart = clip.start;
@@ -1472,7 +1521,7 @@
     if (playMode) pausePreview();
     else startPlayback();
   });
-  $('btnToStart').addEventListener('click', () => { if (duration) seekTo(selStart); });
+  $('btnToStart').addEventListener('click', () => { if (duration) seekTo(projectOffset(activeClip)); });
 
   // arrastrar la línea de reproducción para adelantar o atrasar
   $('playhead').addEventListener('pointerdown', e => {
@@ -1700,7 +1749,7 @@
     const clip=currentClip();
     selStart=clip.start;selEnd=clip.end;
     posCursor=clamp(snap.posCursor,clip.start,Math.max(clip.start,clip.end-.02));
-    syncAll('history');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+    resetView();syncAll('history');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
   }
   editUndo.addEventListener('click',()=>{
     if(!undoSelections.length)return;
@@ -1738,8 +1787,8 @@
     activeClip=Math.min(removed,clips.length-1);
     const clip=currentClip();
     selStart=clip.start;selEnd=clip.end;posCursor=clip.start;
-    syncAll('delete');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
-    toast('Fragmento eliminado. Quedan '+clips.length+(clips.length===1?' fragmento.':' fragmentos.'));
+    resetView();syncAll('delete');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+    toast('Fragmento eliminado. Los demás se unieron con efecto imán.');
   });
   refreshEditButtons();
 
