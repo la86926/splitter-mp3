@@ -1,0 +1,189 @@
+name: Verify exact Splitter wave zoom
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-exact-wave-zoom.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Add exact gesture diagnostics
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def patch_js(text: str) -> str:
+              if 'waveBox.dataset.viewA=viewA.toFixed(6)' not in text:
+                  pattern = re.compile(
+                      r'(function setPreciseView\(start,span\)\{[\s\S]*?viewA=start;\s*viewB=start\+span;)(\s*scheduleWave\(\);)',
+                      re.M,
+                  )
+                  text, count = pattern.subn(
+                      r"\1\n    waveBox.dataset.viewA=viewA.toFixed(6);\n    waveBox.dataset.viewB=viewB.toFixed(6);\2",
+                      text,
+                      count=1,
+                  )
+                  if count != 1:
+                      raise SystemExit('No se pudo instrumentar setPreciseView')
+
+              marker = "if(!pointerPinchActive||waveTouchPointers.size<2)return;"
+              diagnostic = marker + "\n    waveBox.dataset.pinchMoves=String((Number(waveBox.dataset.pinchMoves)||0)+1);"
+              if 'waveBox.dataset.pinchMoves' not in text:
+                  if marker not in text:
+                      raise SystemExit('No se encontró el movimiento de pellizco')
+                  text = text.replace(marker, diagnostic, 1)
+              return text
+
+          app = Path('splitter-app.html')
+          app_text = patch_js(app.read_text(encoding='utf-8'))
+          app.write_text(app_text, encoding='utf-8')
+
+          script = Path('scripts/apply_splitter_patch.py')
+          script_text = script.read_text(encoding='utf-8')
+          script_text = patch_js(script_text)
+          script_text = re.sub(r'20260731-native\d+', '20260731-native13', script_text)
+          script.write_text(script_text, encoding='utf-8')
+
+          index = Path('index.html')
+          index_text = re.sub(r'20260731-native\d+', '20260731-native13', index.read_text(encoding='utf-8'))
+          index.write_text(index_text, encoding='utf-8')
+          PY
+
+      - name: Verify patched files
+        run: |
+          grep -q 'waveBox.dataset.viewA' splitter-app.html
+          grep -q 'waveBox.dataset.pinchMoves' splitter-app.html
+          grep -q '20260731-native13' index.html
+          grep -q 'SPLITTER_SCISSORS_TOOLBAR_V2' splitter-app.html
+          ! grep -q 'Todo el procesamiento ocurre' splitter-app.html
+
+      - name: Install Chromium
+        run: |
+          npm init -y
+          npm install --save-dev playwright
+          npx playwright install --with-deps chromium
+
+      - name: Generate WAV sample
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const rate=44100,seconds=5,frames=rate*seconds,size=frames*2;
+          const b=Buffer.alloc(44+size);
+          b.write('RIFF',0);b.writeUInt32LE(36+size,4);b.write('WAVE',8);
+          b.write('fmt ',12);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);
+          b.writeUInt16LE(1,22);b.writeUInt32LE(rate,24);b.writeUInt32LE(rate*2,28);
+          b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(size,40);
+          for(let i=0;i<frames;i++)b.writeInt16LE(Math.round(Math.sin(2*Math.PI*440*i/rate)*12000),44+i*2);
+          fs.writeFileSync('sample.wav',b);
+          NODE
+
+      - name: Test exact scissors wheel and pinch
+        id: browser_test
+        run: |
+          python3 -m http.server 4173 >/tmp/server.log 2>&1 &
+          cat > test.js <<'NODE'
+          const {chromium}=require('playwright');
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const context=await browser.newContext({viewport:{width:1100,height:900},hasTouch:true});
+            const page=await context.newPage();
+            const errors=[];
+            page.on('pageerror',e=>errors.push(String(e)));
+            page.on('console',m=>console.log('BROWSER:',m.type(),m.text()));
+
+            await page.goto('http://127.0.0.1:4173/?exact=native13',{waitUntil:'networkidle'});
+            await page.waitForSelector('#fileCut',{state:'attached',timeout:30000});
+            await page.setInputFiles('#fileCut','sample.wav');
+            await page.waitForSelector('#editor:not([hidden])',{timeout:30000});
+            await page.waitForFunction(()=>document.querySelector('#roEnd')?.textContent!=='0:00.0');
+
+            const viewport=await page.locator('meta[name="viewport"]').getAttribute('content');
+            if(!viewport.includes('maximum-scale=1')||!viewport.includes('user-scalable=no'))throw Error('La página permite zoom global');
+            if(await page.locator('footer').count())throw Error('El texto eliminado reapareció');
+            if(await page.locator('#editCut').count()!==1)throw Error('Falta el botón de tijeras');
+
+            const frame=page.locator('#selFrame');
+            let sel=await frame.boundingBox();
+            if(!sel)throw Error('No existe selección de onda');
+            await page.mouse.click(sel.x+sel.width*.35,sel.y+sel.height*.5);
+            const cutBefore=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
+            await page.locator('#editCut').click();
+            const cutAfter=await page.locator('#roStart').textContent()+'|'+await page.locator('#roEnd').textContent();
+            if(cutAfter===cutBefore)throw Error('Las tijeras no recortaron en el cursor vertical');
+
+            const wave=page.locator('#waveBox');
+            let wb=await wave.boundingBox();
+            sel=await frame.boundingBox();
+            const wheelLeft=Math.max(wb.x+22,sel.x+22);
+            const wheelRight=Math.min(wb.x+wb.width-22,sel.x+sel.width-22);
+            if(wheelRight<=wheelLeft)throw Error('No hay selección visible para la rueda');
+            await page.mouse.move((wheelLeft+wheelRight)/2,wb.y+wb.height*.5);
+            await page.mouse.wheel(0,-520);
+            await page.waitForTimeout(450);
+            const wheelState=await wave.evaluate(e=>`${e.dataset.viewA}|${e.dataset.viewB}`);
+            if(!/^\d+\.\d{6}\|\d+\.\d{6}$/.test(wheelState))throw Error('La rueda no actualizó el intervalo exacto: '+wheelState);
+
+            wb=await wave.boundingBox();
+            sel=await frame.boundingBox();
+            const visibleLeft=Math.max(wb.x+28,sel.x+28);
+            const visibleRight=Math.min(wb.x+wb.width-28,sel.x+sel.width-28);
+            if(visibleRight-visibleLeft<90)throw Error('No hay suficiente selección visible para pellizcar');
+            const x1=visibleLeft+(visibleRight-visibleLeft)*.38;
+            const x2=visibleLeft+(visibleRight-visibleLeft)*.62;
+            const y=wb.y+wb.height*.5;
+            const client=await context.newCDPSession(page);
+            await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x1,y},{x:x2,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-20,y},{x:x2+20,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-45,y},{x:x2+45,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-70,y},{x:x2+70,y}]});
+            await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+            await page.waitForTimeout(500);
+
+            const pinchState=await wave.evaluate(e=>`${e.dataset.viewA}|${e.dataset.viewB}`);
+            const pinchMoves=Number(await wave.getAttribute('data-pinch-moves')||0);
+            if(pinchMoves<1)throw Error('Los dos dedos llegaron, pero no ejecutaron movimiento de zoom');
+            if(pinchState===wheelState)throw Error(`El pellizco no cambió el intervalo exacto (${wheelState})`);
+            if(errors.length)throw Error('Errores de página: '+errors.join(' | '));
+
+            console.log('VERIFIED',JSON.stringify({cutBefore,cutAfter,wheelState,pinchState,pinchMoves}));
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          node test.js
+
+      - name: Commit verified application
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html splitter-app.html scripts/apply_splitter_patch.py
+          git commit -m "Publicar zoom exacto y tijeras verificadas en Splitter MP3"
+          git pull --rebase origin main
+          git push
+
+      - name: Save result
+        if: always()
+        env:
+          TEST_STATUS: ${{ job.status }}
+        run: |
+          printf '{"status":"%s","commit":"%s","run_id":"%s"}\n' "$TEST_STATUS" "$GITHUB_SHA" "$GITHUB_RUN_ID" > splitter-exact-test-status.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add splitter-exact-test-status.json
+          git commit -m "Registrar verificación exacta de Splitter MP3 [skip ci]" || exit 0
+          git pull --rebase origin main
+          git push
