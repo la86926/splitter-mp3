@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 env:
-  TEST_REVISION: 8
+  TEST_REVISION: 9
 
 jobs:
   verify:
