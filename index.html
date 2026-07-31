@@ -3,170 +3,242 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Splitter MP3</title>
-<style>html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overscroll-behavior:none;touch-action:pan-y}#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}</style>
+<style>
+html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overscroll-behavior:none;touch-action:pan-y}
+#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}
+</style>
 </head>
 <body>
 <div id="loader">Abriendo Splitter MP3…</div>
 <script>
 (async function(){
-  const response=await fetch('./splitter-app.html?v=20260731-wavezoom6',{cache:'no-store'});
+  const response=await fetch('./splitter-app.html?v=20260731-wavezoom8',{cache:'no-store'});
   if(!response.ok)throw new Error('No se pudo cargar la aplicación original.');
   let source=await response.text();
 
+  source=source.replace(
+    /<meta\s+name=["']viewport["'][^>]*>/i,
+    '<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">'
+  );
   source=source.replace(/\s*<footer>[\s\S]*?<\/footer>/i,'');
 
-  source=source.replace(
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
-  );
+  const extraCss=`
+html,body{overscroll-behavior:none!important}
+body{touch-action:pan-y!important}
+.wave-box,#waveCanvas,.sel-frame,.handle,.playhead{touch-action:none!important}
+.editor-tools{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 2px}
+.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center;transition:transform .15s ease,color .15s ease,background .15s ease}
+.editor-tool:hover{color:var(--text);transform:translateY(-1px)}
+.editor-tool:active{transform:scale(.95)}
+.editor-tool:disabled{opacity:.35;cursor:default;transform:none}
+.editor-tool.danger{color:#d34b3f}
+.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+`;
+  source=source.replace('</style>',extraCss+'</style>');
 
-  const old=`  /* ---- Interacción sobre la onda: toque = ubicar cursor; zoom desactivado ---- */
-  canvas.addEventListener('pointerdown', e => {
-    if (!duration || !e.isPrimary) return;
-    e.preventDefault();
-    canvas.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    let moved = false;
+  const internalPatch=String.raw`
 
-    const move = ev => {
-      if (Math.abs(ev.clientX - startX) > 4) moved = true;
-    };
-    const up = ev => {
-      canvas.releasePointerCapture(e.pointerId);
-      canvas.removeEventListener('pointermove', move);
-      canvas.removeEventListener('pointerup', up);
-      canvas.removeEventListener('pointercancel', up);
-      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
-    };
+  /* ============ Ajustes de precisión: zoom, tijeras y bloqueo de zoom de página ============ */
+  document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
+  document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});
+  document.addEventListener('gestureend',e=>e.preventDefault(),{passive:false});
+  document.addEventListener('dblclick',e=>e.preventDefault(),{capture:true});
+  window.addEventListener('wheel',e=>{
+    if((e.ctrlKey||e.metaKey)&&!waveBox.contains(e.target))e.preventDefault();
+  },{passive:false,capture:true});
 
-    canvas.addEventListener('pointermove', move);
-    canvas.addEventListener('pointerup', up);
-    canvas.addEventListener('pointercancel', up);
-  });
+  let lastTouchEnd=0;
+  document.addEventListener('touchend',e=>{
+    const now=Date.now();
+    if(now-lastTouchEnd<320)e.preventDefault();
+    lastTouchEnd=now;
+  },{passive:false,capture:true});
 
-  // Bloquea únicamente el pellizco del trackpad sobre la onda; el desplazamiento normal sigue disponible.
-  waveBox.addEventListener('wheel', e => {
-    if (e.ctrlKey || e.metaKey) e.preventDefault();
-  }, { passive:false });`;
-
-  const replacement=`  /* ---- Zoom y navegación de la onda ---- */
-  const waveTouches=new Map();
-  let waveMode='idle';
-  let oneStartX=0,oneLastX=0,oneMoved=false;
-  let pinchDistance0=0,pinchSpan0=0,pinchAnchor=0;
-  const MIN_WAVE_SPAN=.2;
-
-  function setWaveWindow(a,span){
-    span=clamp(span,Math.min(MIN_WAVE_SPAN,duration),duration);
-    a=clamp(a,0,Math.max(0,duration-span));
-    viewA=a;viewB=a+span;scheduleWave();
-  }
-  function zoomAt(clientX,factor){
-    if(!duration||!isFinite(factor)||factor<=0)return;
-    const r=waveBox.getBoundingClientRect();
-    const ratio=clamp((clientX-r.left)/Math.max(1,r.width),0,1);
-    const oldSpan=viewSpan();
-    const newSpan=clamp(oldSpan*factor,Math.min(MIN_WAVE_SPAN,duration),duration);
-    const anchor=viewA+ratio*oldSpan;
-    setWaveWindow(anchor-ratio*newSpan,newSpan);
-  }
-  function pair(){return [...waveTouches.values()].slice(0,2)}
-  function pairDistance(){const p=pair();return p.length<2?0:Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y)}
-  function pairMidX(){const p=pair();return p.length<2?0:(p[0].x+p[1].x)/2}
-
-  canvas.addEventListener('pointerdown',e=>{
+  const MIN_PRECISE_SPAN=.3;
+  function preciseMinSpan(){return duration?Math.min(MIN_PRECISE_SPAN,duration):MIN_PRECISE_SPAN}
+  function setPreciseView(start,span){
     if(!duration)return;
-    if(e.pointerType==='touch'){
-      e.preventDefault();e.stopImmediatePropagation();
-      waveTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});
-      try{canvas.setPointerCapture(e.pointerId)}catch(_){}
-      if(waveTouches.size===1){
-        waveMode='one';oneStartX=oneLastX=e.clientX;oneMoved=false;
-      }else if(waveTouches.size===2){
-        waveMode='pinch';oneMoved=true;
-        pinchDistance0=Math.max(1,pairDistance());
-        pinchSpan0=viewSpan();
-        pinchAnchor=timeAtClientX(pairMidX());
-      }
-      return;
-    }
-    if(!e.isPrimary)return;
-    e.preventDefault();
-    const start=e.clientX;let moved=false;
-    try{canvas.setPointerCapture(e.pointerId)}catch(_){}
-    const move=ev=>{if(Math.abs(ev.clientX-start)>4)moved=true};
-    const up=ev=>{
-      try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
-      canvas.removeEventListener('pointermove',move);
-      canvas.removeEventListener('pointerup',up);
-      canvas.removeEventListener('pointercancel',up);
-      if(!moved&&ev.type==='pointerup')seekTo(timeAtClientX(ev.clientX));
-    };
-    canvas.addEventListener('pointermove',move);
-    canvas.addEventListener('pointerup',up);
-    canvas.addEventListener('pointercancel',up);
-  },true);
-
-  canvas.addEventListener('pointermove',e=>{
-    if(e.pointerType!=='touch'||!waveTouches.has(e.pointerId))return;
-    e.preventDefault();e.stopImmediatePropagation();
-    const p=waveTouches.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
-    if(waveMode==='pinch'&&waveTouches.size>=2){
-      const d=Math.max(1,pairDistance());
-      const mid=pairMidX();
-      const r=waveBox.getBoundingClientRect();
-      const ratio=clamp((mid-r.left)/Math.max(1,r.width),0,1);
-      const span=clamp(pinchSpan0*pinchDistance0/d,Math.min(MIN_WAVE_SPAN,duration),duration);
-      setWaveWindow(pinchAnchor-ratio*span,span);
-      return;
-    }
-    if(waveMode==='one'&&waveTouches.size===1){
-      const dx=e.clientX-oneLastX;
-      if(Math.abs(e.clientX-oneStartX)>5)oneMoved=true;
-      if(oneMoved&&viewSpan()<duration){
-        const span=viewSpan();
-        const r=waveBox.getBoundingClientRect();
-        setWaveWindow(viewA-dx/Math.max(1,r.width)*span,span);
-      }
-      oneLastX=e.clientX;
-    }
-  },true);
-
-  function endWaveTouch(e){
-    if(e.pointerType!=='touch'||!waveTouches.has(e.pointerId))return;
-    e.preventDefault();e.stopImmediatePropagation();
-    const wasSingle=waveTouches.size===1;
-    waveTouches.delete(e.pointerId);
-    try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
-    if(wasSingle&&!oneMoved&&e.type==='pointerup')seekTo(timeAtClientX(e.clientX));
-    if(waveTouches.size===1){
-      const p=[...waveTouches.values()][0];
-      waveMode='one';oneStartX=oneLastX=p.x;oneMoved=true;
-    }else if(waveTouches.size===0){waveMode='idle';oneMoved=false}
+    span=clamp(span,preciseMinSpan(),duration);
+    start=clamp(start,0,Math.max(0,duration-span));
+    viewA=start;
+    viewB=start+span;
+    scheduleWave();
   }
-  canvas.addEventListener('pointerup',endWaveTouch,true);
-  canvas.addEventListener('pointercancel',endWaveTouch,true);
+  function zoomWaveAt(clientX,factor){
+    if(!duration||!isFinite(factor)||factor<=0)return;
+    const rect=waveBox.getBoundingClientRect();
+    const ratio=clamp((clientX-rect.left)/Math.max(1,rect.width),0,1);
+    const oldSpan=viewSpan();
+    const anchor=viewA+ratio*oldSpan;
+    const newSpan=clamp(oldSpan*factor,preciseMinSpan(),duration);
+    setPreciseView(anchor-ratio*newSpan,newSpan);
+  }
 
+  /* La rueda hace zoom aunque el puntero esté sobre la parte seleccionada, las asas o el cursor. */
   waveBox.addEventListener('wheel',e=>{
     if(!duration)return;
-    e.preventDefault();e.stopPropagation();
-    zoomAt(e.clientX,Math.exp(e.deltaY*((e.ctrlKey||e.metaKey)?.007:.0024)));
-  },{passive:false});`;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const factor=Math.exp(e.deltaY*.0024);
+    zoomWaveAt(e.clientX,factor);
+  },{passive:false,capture:true});
 
-  if(!source.includes(old))throw new Error('No se encontró el bloque original de la onda.');
-  source=source.replace(old,replacement);
+  /* Pellizco de dos dedos sobre cualquier zona de la onda, incluida la selección. */
+  let pinchActive=false;
+  let pinchStartDistance=0;
+  let pinchStartSpan=0;
+  let pinchAnchorTime=0;
 
-  source=source.replace('</style>',`\nhtml,body{touch-action:pan-y;overscroll-behavior:none}footer{display:none!important}.wave-box,#waveCanvas{touch-action:none!important}.editor-tools{display:flex;justify-content:center;gap:8px;margin:14px 0 2px}.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center}.editor-tool:active{transform:scale(.95)}.editor-tool:disabled{opacity:.35}.editor-tool.danger{color:#d34b3f}.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n</style>`);
+  function touchDistance(touches){
+    const a=touches[0],b=touches[1];
+    return Math.hypot(b.clientX-a.clientX,b.clientY-a.clientY);
+  }
+  function touchMidX(touches){return (touches[0].clientX+touches[1].clientX)/2}
 
-  source=source.replace('</body>',`<script>\n(function(){\n  document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});\n  document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});\n  document.addEventListener('gestureend',e=>e.preventDefault(),{passive:false});\n  let lastTouchEnd=0;document.addEventListener('touchend',e=>{const now=Date.now();if(now-lastTouchEnd<320)e.preventDefault();lastTouchEnd=now},{passive:false});\n\n  const transport=document.querySelector('.transport');if(!transport)return;\n  const tools=document.createElement('div');tools.className='editor-tools';tools.innerHTML='\\
-  <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\\
-  <button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\\
-  <button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\\
-  <button class="editor-tool danger" id="editDelete" title="Limpiar recorte" aria-label="Limpiar recorte"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';\n  transport.insertAdjacentElement('afterend',tools);\n\n  const undo=[],redo=[];let applying=false;\n  const snapshot=()=>[selStart,selEnd];\n  const equal=(a,b)=>a&&b&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001;\n  function record(){const s=snapshot();if(!equal(undo[undo.length-1],s)){undo.push(s);if(undo.length>50)undo.shift();redo.length=0}refresh()}\n  function apply(s){if(!s)return;applying=true;setSelection(s[0],s[1],'history');applying=false;refresh()}\n  function refresh(){editUndo.disabled=undo.length<2;editRedo.disabled=!redo.length}\n  setTimeout(record,0);\n  waveBox.addEventListener('pointerup',()=>{if(!applying)setTimeout(record,0)},true);\n  editUndo.onclick=()=>{if(undo.length<2)return;redo.push(undo.pop());apply(undo[undo.length-1])};\n  editRedo.onclick=()=>{if(!redo.length)return;const s=redo.pop();undo.push(s);apply(s)};\n  editCut.onclick=()=>{\n    if(!duration)return;\n    const t=clamp(Number(audio.currentTime)||0,0,duration);\n    if(t<=selStart+.01||t>=selEnd-.01)return;\n    record();\n    const leftDistance=t-selStart,rightDistance=selEnd-t;\n    if(leftDistance<=rightDistance)setSelection(t,selEnd,'scissors');\n    else setSelection(selStart,t,'scissors');\n    record();\n  };\n  editDelete.onclick=()=>{if(!duration)return;record();setSelection(0,duration,'clear');record()};\n  refresh();\n})();\n<\/script>\n</body>`);
+  waveBox.addEventListener('touchstart',e=>{
+    if(!duration||e.touches.length<2)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    pinchActive=true;
+    pinchStartDistance=Math.max(1,touchDistance(e.touches));
+    pinchStartSpan=viewSpan();
+    pinchAnchorTime=timeAtClientX(touchMidX(e.touches));
+  },{passive:false,capture:true});
 
-  document.open();document.write(source);document.close();
-})().catch(error=>{console.error(error);const loader=document.getElementById('loader');if(loader)loader.textContent='No se pudo abrir Splitter MP3. Recarga la página.'});
+  waveBox.addEventListener('touchmove',e=>{
+    if(!pinchActive||e.touches.length<2)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const distance=Math.max(1,touchDistance(e.touches));
+    const midpoint=touchMidX(e.touches);
+    const rect=waveBox.getBoundingClientRect();
+    const ratio=clamp((midpoint-rect.left)/Math.max(1,rect.width),0,1);
+    const span=clamp(pinchStartSpan*pinchStartDistance/distance,preciseMinSpan(),duration);
+    setPreciseView(pinchAnchorTime-ratio*span,span);
+  },{passive:false,capture:true});
+
+  function finishPinch(e){
+    if(!pinchActive)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if(e.touches.length<2)pinchActive=false;
+  }
+  waveBox.addEventListener('touchend',finishPinch,{passive:false,capture:true});
+  waveBox.addEventListener('touchcancel',finishPinch,{passive:false,capture:true});
+
+  /* Detiene los arrastres internos mientras se está pellizcando. */
+  waveBox.addEventListener('pointermove',e=>{
+    if(pinchActive&&e.pointerType==='touch'){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  },true);
+  waveBox.addEventListener('pointerup',e=>{
+    if(pinchActive&&e.pointerType==='touch'){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  },true);
+
+  /* Barra de edición conectada al estado real del editor. */
+  const previousTools=document.querySelector('.editor-tools');
+  if(previousTools)previousTools.remove();
+  const transport=document.querySelector('.transport');
+  const tools=document.createElement('div');
+  tools.className='editor-tools';
+  tools.innerHTML='\
+<button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\
+<button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\
+<button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\
+<button class="editor-tool danger" id="editDelete" title="Limpiar recorte" aria-label="Limpiar recorte"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';
+  transport.insertAdjacentElement('afterend',tools);
+
+  const editUndo=$('editUndo'),editRedo=$('editRedo'),editCut=$('editCut'),editDelete=$('editDelete');
+  const undoSelections=[];
+  const redoSelections=[];
+  let applyingSelectionHistory=false;
+
+  function selectionSnapshot(){return [selStart,selEnd]}
+  function sameSelection(a,b){return a&&b&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001}
+  function refreshEditButtons(){
+    editUndo.disabled=!undoSelections.length;
+    editRedo.disabled=!redoSelections.length;
+  }
+  function rememberBeforeEdit(){
+    const snap=selectionSnapshot();
+    if(!sameSelection(undoSelections[undoSelections.length-1],snap))undoSelections.push(snap);
+    if(undoSelections.length>50)undoSelections.shift();
+    redoSelections.length=0;
+    refreshEditButtons();
+  }
+  function applySelectionSnapshot(snap){
+    if(!snap)return;
+    applyingSelectionHistory=true;
+    setSelection(snap[0],snap[1],'history');
+    applyingSelectionHistory=false;
+    posCursor=clamp(posCursor,selStart,selEnd);
+    showCursorUI();
+    updatePlayheadUI(posCursor);
+    refreshEditButtons();
+  }
+
+  editUndo.addEventListener('click',()=>{
+    if(!undoSelections.length)return;
+    redoSelections.push(selectionSnapshot());
+    applySelectionSnapshot(undoSelections.pop());
+  });
+  editRedo.addEventListener('click',()=>{
+    if(!redoSelections.length)return;
+    undoSelections.push(selectionSnapshot());
+    applySelectionSnapshot(redoSelections.pop());
+  });
+
+  editCut.addEventListener('click',()=>{
+    if(!duration)return;
+    if(playMode)pausePreview();
+    const t=clamp(posCursor,selStart,selEnd);
+    if(t<=selStart+MIN_GAP||t>=selEnd-MIN_GAP){
+      toast('Coloca el cursor vertical dentro de la selección.');
+      return;
+    }
+    rememberBeforeEdit();
+    const left=t-selStart;
+    const right=selEnd-t;
+    if(left<=right)setSelection(t,selEnd,'scissors');
+    else setSelection(selStart,t,'scissors');
+    posCursor=t;
+    showCursorUI();
+    updatePlayheadUI(posCursor);
+    toast('Recorte ajustado exactamente en '+fmtTime(t,true)+'.');
+  });
+
+  editDelete.addEventListener('click',()=>{
+    if(!duration)return;
+    rememberBeforeEdit();
+    setSelection(0,duration,'clear');
+    posCursor=0;
+    showCursorUI();
+    updatePlayheadUI(0);
+  });
+  refreshEditButtons();
+`;
+
+  const insertionPoint=source.lastIndexOf('\n})();');
+  if(insertionPoint<0)throw new Error('No se encontró el cierre del programa original.');
+  source=source.slice(0,insertionPoint)+internalPatch+source.slice(insertionPoint);
+
+  document.open();
+  document.write(source);
+  document.close();
+})().catch(error=>{
+  console.error(error);
+  const loader=document.getElementById('loader');
+  if(loader)loader.textContent='No se pudo abrir Splitter MP3. Recarga la página.';
+});
 </script>
 </body>
 </html>
