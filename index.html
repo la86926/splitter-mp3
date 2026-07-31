@@ -4,71 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Splitter MP3</title>
-<style>
-  html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-  #loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}
-</style>
+<style>html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}</style>
 </head>
 <body>
 <div id="loader">Abriendo Splitter MP3…</div>
 <script>
 (async function(){
-  const response = await fetch('./splitter-app.html?v=20260731-zoom2', { cache:'no-store' });
-  if (!response.ok) throw new Error('No se pudo cargar la aplicación original.');
-  const source = await response.text();
-
-  function replaceOnce(text, before, after, label){
-    if (!text.includes(before)) throw new Error('No se encontró la sección: ' + label);
-    return text.replace(before, after);
-  }
-
-  let patched = source;
-
-  patched = replaceOnce(
-    patched,
-    `  const HANDLE_W = 22, MIN_GAP = 0.1;`,
-    `  const HANDLE_W = 22, MIN_GAP = 0.1;
-  let pinchActive = false;`,
-    'estado del editor'
-  );
-
-  patched = replaceOnce(
-    patched,
-    `      const move = ev => {
-        const t = timeAtClientX(ev.clientX);`,
-    `      const move = ev => {
-        if (pinchActive) return;
-        const t = timeAtClientX(ev.clientX);`,
-    'arrastre de las asas'
-  );
-
-  patched = replaceOnce(
-    patched,
-    `    const move = ev => {
-      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;`,
-    `    const move = ev => {
-      if (pinchActive){ moved = true; return; }
-      if (!moved && Math.abs(ev.clientX - startX) <= 4) return;`,
-    'arrastre de la selección'
-  );
-
-  patched = replaceOnce(
-    patched,
-    `      // toque sin arrastre: ubicar el cursor de reproducción en ese punto
-      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));`,
-    `      // toque sin arrastre: ubicar el cursor de reproducción en ese punto
-      if (!pinchActive && !moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));`,
-    'toque sobre la selección'
-  );
-
-  patched = replaceOnce(
-    patched,
-    `    const move = ev => { seekTo(timeAtClientX(ev.clientX)); };`,
-    `    const move = ev => { if (!pinchActive) seekTo(timeAtClientX(ev.clientX)); };`,
-    'arrastre del cursor de reproducción'
-  );
-
-  const oldBlock = `  /* ---- Interacción sobre la onda: toque = ubicar cursor; zoom desactivado ---- */
+  const response=await fetch('./splitter-app.html?v=20260731-touch3',{cache:'no-store'});
+  if(!response.ok)throw new Error('No se pudo cargar la aplicación original.');
+  let source=await response.text();
+  const old=`  /* ---- Interacción sobre la onda: toque = ubicar cursor; zoom desactivado ---- */
   canvas.addEventListener('pointerdown', e => {
     if (!duration || !e.isPrimary) return;
     e.preventDefault();
@@ -96,139 +41,82 @@
   waveBox.addEventListener('wheel', e => {
     if (e.ctrlKey || e.metaKey) e.preventDefault();
   }, { passive:false });`;
+  const replacement=`  /* ---- Gestos estables: un dedo desplaza o ubica cursor; dos dedos hacen zoom ---- */
+  const touchPoints=new Map();
+  let gestureMode='none';
+  let gestureStartX=0,gestureLastX=0,gestureMoved=false;
+  let pinchStartDistance=0,pinchStartSpan=0,pinchAnchorTime=0;
+  const MIN_VIEW_SPAN=0.25;
 
-  const zoomBlock = `  /* ---- Interacción sobre la onda: toque para ubicar cursor y zoom gestual ---- */
-  const zoomPointers = new Map();
-  let pinchStartDistance = 0;
-  let pinchStartSpan = 0;
-  let pinchAnchorTime = 0;
-  let pinchSelectionStart = 0;
-  let pinchSelectionEnd = 0;
-  const MIN_VIEW_SPAN = 0.25;
-
-  function zoomWave(factor, clientX){
-    if (!duration || !isFinite(factor) || factor <= 0) return;
-    const r = waveBox.getBoundingClientRect();
-    const ratio = clamp((clientX - r.left) / Math.max(1, r.width), 0, 1);
-    const oldSpan = viewSpan();
-    const minSpan = Math.min(MIN_VIEW_SPAN, duration);
-    const newSpan = clamp(oldSpan * factor, minSpan, duration);
-    const anchorTime = viewA + ratio * oldSpan;
-    let nextA = anchorTime - ratio * newSpan;
-    nextA = clamp(nextA, 0, Math.max(0, duration - newSpan));
-    viewA = nextA;
-    viewB = nextA + newSpan;
+  function zoomWave(factor,clientX){
+    if(!duration||!isFinite(factor)||factor<=0)return;
+    const r=waveBox.getBoundingClientRect();
+    const ratio=clamp((clientX-r.left)/Math.max(1,r.width),0,1);
+    const oldSpan=viewSpan();
+    const newSpan=clamp(oldSpan*factor,Math.min(MIN_VIEW_SPAN,duration),duration);
+    const anchor=viewA+ratio*oldSpan;
+    viewA=clamp(anchor-ratio*newSpan,0,Math.max(0,duration-newSpan));
+    viewB=viewA+newSpan;
     scheduleWave();
   }
+  function distance(){const p=[...touchPoints.values()];return p.length<2?0:Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y)}
+  function midpointX(){const p=[...touchPoints.values()];return p.length<2?0:(p[0].x+p[1].x)/2}
 
-  canvas.addEventListener('pointerdown', e => {
-    if (!duration || !e.isPrimary) return;
-    e.preventDefault();
-    canvas.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    let moved = false;
+  canvas.addEventListener('pointerdown',e=>{
+    if(!duration)return;
+    if(e.pointerType!=='touch'){
+      if(!e.isPrimary)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);const x=e.clientX;let moved=false;
+      const move=ev=>{if(Math.abs(ev.clientX-x)>4)moved=true};
+      const up=ev=>{try{canvas.releasePointerCapture(e.pointerId)}catch(_){}canvas.removeEventListener('pointermove',move);canvas.removeEventListener('pointerup',up);canvas.removeEventListener('pointercancel',up);if(!moved&&ev.type==='pointerup')seekTo(timeAtClientX(ev.clientX))};
+      canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerup',up);canvas.addEventListener('pointercancel',up);return;
+    }
+    e.preventDefault();e.stopImmediatePropagation();
+    touchPoints.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    try{canvas.setPointerCapture(e.pointerId)}catch(_){}
+    if(touchPoints.size===1){gestureMode='pending';gestureStartX=gestureLastX=e.clientX;gestureMoved=false}
+    else if(touchPoints.size===2){gestureMode='pinch';pinchStartDistance=Math.max(1,distance());pinchStartSpan=viewSpan();pinchAnchorTime=timeAtClientX(midpointX());gestureMoved=true}
+  },true);
 
-    const move = ev => {
-      if (pinchActive){ moved = true; return; }
-      if (Math.abs(ev.clientX - startX) > 4) moved = true;
-    };
-    const up = ev => {
-      try { canvas.releasePointerCapture(e.pointerId); } catch(_){}
-      canvas.removeEventListener('pointermove', move);
-      canvas.removeEventListener('pointerup', up);
-      canvas.removeEventListener('pointercancel', up);
-      if (!pinchActive && !moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
-    };
+  canvas.addEventListener('pointermove',e=>{
+    if(e.pointerType!=='touch'||!touchPoints.has(e.pointerId))return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const p=touchPoints.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
+    if(gestureMode==='pinch'&&touchPoints.size>=2){
+      const d=Math.max(1,distance()),mid=midpointX(),r=waveBox.getBoundingClientRect();
+      const ratio=clamp((mid-r.left)/Math.max(1,r.width),0,1);
+      const span=clamp(pinchStartSpan*pinchStartDistance/d,Math.min(MIN_VIEW_SPAN,duration),duration);
+      viewA=clamp(pinchAnchorTime-ratio*span,0,Math.max(0,duration-span));viewB=viewA+span;scheduleWave();return;
+    }
+    if(touchPoints.size===1){
+      const dx=e.clientX-gestureLastX;if(Math.abs(e.clientX-gestureStartX)>5){gestureMode='pan';gestureMoved=true}
+      if(gestureMode==='pan'&&viewSpan()<duration){const r=waveBox.getBoundingClientRect();const dt=-dx/Math.max(1,r.width)*viewSpan();viewA=clamp(viewA+dt,0,Math.max(0,duration-viewSpan()));viewB=viewA+viewSpan();scheduleWave()}
+      gestureLastX=e.clientX;
+    }
+  },true);
 
-    canvas.addEventListener('pointermove', move);
-    canvas.addEventListener('pointerup', up);
-    canvas.addEventListener('pointercancel', up);
-  });
-
-  function pointerDistance(){
-    const pts = [...zoomPointers.values()];
-    if (pts.length < 2) return 0;
-    return Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+  function finishTouch(e){
+    if(e.pointerType!=='touch'||!touchPoints.has(e.pointerId))return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const wasOnly=touchPoints.size===1;touchPoints.delete(e.pointerId);try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
+    if(wasOnly&&!gestureMoved&&e.type==='pointerup')seekTo(timeAtClientX(e.clientX));
+    if(touchPoints.size===1){const p=[...touchPoints.values()][0];gestureMode='pending';gestureStartX=gestureLastX=p.x;gestureMoved=true}
+    else if(touchPoints.size===0){gestureMode='none';gestureMoved=false}
   }
-  function pointerMidX(){
-    const pts = [...zoomPointers.values()];
-    return pts.length < 2 ? 0 : (pts[0].x + pts[1].x) / 2;
-  }
+  canvas.addEventListener('pointerup',finishTouch,true);canvas.addEventListener('pointercancel',finishTouch,true);
+  waveBox.addEventListener('wheel',e=>{if(!duration)return;e.preventDefault();zoomWave(Math.exp(e.deltaY*((e.ctrlKey||e.metaKey)?.008:.0025)),e.clientX)},{passive:false});`;
+  if(!source.includes(old))throw new Error('No se encontró la interacción original.');
+  source=source.replace(old,replacement);
 
-  waveBox.addEventListener('pointerdown', e => {
-    if (!duration || e.pointerType !== 'touch') return;
-    if (zoomPointers.size >= 2){
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
+  source=source.replace('</style>',`\n.editor-tools{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 2px}.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center;transition:.16s}.editor-tool:hover{color:var(--text);transform:translateY(-1px)}.editor-tool:active{transform:scale(.95)}.editor-tool:disabled{opacity:.35;transform:none;cursor:default}.editor-tool.danger{color:#d34b3f}.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n</style>`);
 
-    zoomPointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
-    if (zoomPointers.size === 1){
-      pinchSelectionStart = selStart;
-      pinchSelectionEnd = selEnd;
-    }
-    if (zoomPointers.size === 2){
-      pinchActive = true;
-      pinchStartDistance = Math.max(1, pointerDistance());
-      pinchStartSpan = viewSpan();
-      pinchAnchorTime = timeAtClientX(pointerMidX());
-      setSelection(pinchSelectionStart, pinchSelectionEnd, 'pinch');
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  }, true);
+  source=source.replace('</body>',`<script>\n(function(){\n const transport=document.querySelector('.transport');if(!transport)return;\n const tools=document.createElement('div');tools.className='editor-tools';tools.innerHTML='\\
+ <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\\
+ <button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\\
+ <button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\\
+ <button class="editor-tool danger" id="editDelete" title="Eliminar selección" aria-label="Eliminar selección"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';\n transport.insertAdjacentElement('afterend',tools);\n const undo=[],redo=[];let internal=false;\n function snap(){return [selStart,selEnd]}\n function same(a,b){return a&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001}\n function push(){const s=snap();if(!same(undo[undo.length-1],s)){undo.push(s);if(undo.length>40)undo.shift();redo.length=0}update()}\n function apply(s){if(!s)return;internal=true;setSelection(s[0],s[1],'history');internal=false;update()}\n function update(){document.getElementById('editUndo').disabled=undo.length<2;document.getElementById('editRedo').disabled=!redo.length}\n setTimeout(()=>{push()},0);\n ['pointerdown','change'].forEach(ev=>waveBox.addEventListener(ev,()=>{if(!internal)setTimeout(push,0)},true));\n document.getElementById('editUndo').onclick=()=>{if(undo.length<2)return;redo.push(undo.pop());apply(undo[undo.length-1])};\n document.getElementById('editRedo').onclick=()=>{if(!redo.length)return;const s=redo.pop();undo.push(s);apply(s)};\n document.getElementById('editCut').onclick=()=>{if(!duration)return;push();const t=clamp(audio.currentTime||selStart,0,duration);const mid=(selStart+selEnd)/2;if(t<=mid)setSelection(Math.min(t,selEnd-.1),selEnd,'cut');else setSelection(selStart,Math.max(t,selStart+.1),'cut');push()};\n document.getElementById('editDelete').onclick=()=>{if(!duration)return;push();setSelection(0,duration,'delete');push()};\n update();\n})();\n<\/script>\n</body>`);
 
-  waveBox.addEventListener('pointermove', e => {
-    const point = zoomPointers.get(e.pointerId);
-    if (!point) return;
-    point.x = e.clientX;
-    point.y = e.clientY;
-    if (!pinchActive || zoomPointers.size < 2) return;
-
-    const distance = Math.max(1, pointerDistance());
-    const midpoint = pointerMidX();
-    const r = waveBox.getBoundingClientRect();
-    const ratio = clamp((midpoint - r.left) / Math.max(1, r.width), 0, 1);
-    const minSpan = Math.min(MIN_VIEW_SPAN, duration);
-    const newSpan = clamp(pinchStartSpan * pinchStartDistance / distance, minSpan, duration);
-    let nextA = pinchAnchorTime - ratio * newSpan;
-    nextA = clamp(nextA, 0, Math.max(0, duration - newSpan));
-    viewA = nextA;
-    viewB = nextA + newSpan;
-    scheduleWave();
-  }, true);
-
-  function endZoomPointer(e){
-    if (!zoomPointers.has(e.pointerId)) return;
-    zoomPointers.delete(e.pointerId);
-    if (zoomPointers.size === 0){
-      pinchStartDistance = 0;
-      pinchStartSpan = 0;
-      setTimeout(() => { if (zoomPointers.size === 0) pinchActive = false; }, 0);
-    }
-  }
-  waveBox.addEventListener('pointerup', endZoomPointer, true);
-  waveBox.addEventListener('pointercancel', endZoomPointer, true);
-
-  // Rueda del mouse o pellizco del trackpad: arriba acerca y abajo aleja.
-  waveBox.addEventListener('wheel', e => {
-    if (!duration) return;
-    e.preventDefault();
-    const intensity = (e.ctrlKey || e.metaKey) ? 0.008 : 0.0025;
-    zoomWave(Math.exp(e.deltaY * intensity), e.clientX);
-  }, { passive:false });`;
-
-  patched = replaceOnce(patched, oldBlock, zoomBlock, 'interacción de la onda');
-
-  document.open();
-  document.write(patched);
-  document.close();
-})().catch(function(error){
-  console.error(error);
-  const loader = document.getElementById('loader');
-  if (loader) loader.textContent = 'No se pudo abrir Splitter MP3. Recarga la página.';
-});
+  document.open();document.write(source);document.close();
+})().catch(error=>{console.error(error);const loader=document.getElementById('loader');if(loader)loader.textContent='No se pudo abrir Splitter MP3. Recarga la página.'});
 </script>
 </body>
 </html>
