@@ -2,17 +2,23 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>Splitter MP3</title>
-<style>html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}</style>
+<style>html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overscroll-behavior:none;touch-action:pan-y}#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}</style>
 </head>
 <body>
 <div id="loader">Abriendo Splitter MP3…</div>
 <script>
 (async function(){
-  const response=await fetch('./splitter-app.html?v=20260731-touch3',{cache:'no-store'});
+  const response=await fetch('./splitter-app.html?v=20260731-wavezoom5',{cache:'no-store'});
   if(!response.ok)throw new Error('No se pudo cargar la aplicación original.');
   let source=await response.text();
+
+  source=source.replace(
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+  );
+
   const old=`  /* ---- Interacción sobre la onda: toque = ubicar cursor; zoom desactivado ---- */
   canvas.addEventListener('pointerdown', e => {
     if (!duration || !e.isPrimary) return;
@@ -41,79 +47,121 @@
   waveBox.addEventListener('wheel', e => {
     if (e.ctrlKey || e.metaKey) e.preventDefault();
   }, { passive:false });`;
-  const replacement=`  /* ---- Gestos estables: un dedo desplaza o ubica cursor; dos dedos hacen zoom ---- */
-  const touchPoints=new Map();
-  let gestureMode='none';
-  let gestureStartX=0,gestureLastX=0,gestureMoved=false;
-  let pinchStartDistance=0,pinchStartSpan=0,pinchAnchorTime=0;
-  const MIN_VIEW_SPAN=0.25;
 
-  function zoomWave(factor,clientX){
+  const replacement=`  /* ---- Zoom y navegación de la onda ---- */
+  const waveTouches=new Map();
+  let waveMode='idle';
+  let oneStartX=0,oneLastX=0,oneMoved=false;
+  let pinchDistance0=0,pinchSpan0=0,pinchAnchor=0;
+  const MIN_WAVE_SPAN=.2;
+
+  function setWaveWindow(a,span){
+    span=clamp(span,Math.min(MIN_WAVE_SPAN,duration),duration);
+    a=clamp(a,0,Math.max(0,duration-span));
+    viewA=a;viewB=a+span;scheduleWave();
+  }
+  function zoomAt(clientX,factor){
     if(!duration||!isFinite(factor)||factor<=0)return;
     const r=waveBox.getBoundingClientRect();
     const ratio=clamp((clientX-r.left)/Math.max(1,r.width),0,1);
     const oldSpan=viewSpan();
-    const newSpan=clamp(oldSpan*factor,Math.min(MIN_VIEW_SPAN,duration),duration);
+    const newSpan=clamp(oldSpan*factor,Math.min(MIN_WAVE_SPAN,duration),duration);
     const anchor=viewA+ratio*oldSpan;
-    viewA=clamp(anchor-ratio*newSpan,0,Math.max(0,duration-newSpan));
-    viewB=viewA+newSpan;
-    scheduleWave();
+    setWaveWindow(anchor-ratio*newSpan,newSpan);
   }
-  function distance(){const p=[...touchPoints.values()];return p.length<2?0:Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y)}
-  function midpointX(){const p=[...touchPoints.values()];return p.length<2?0:(p[0].x+p[1].x)/2}
+  function pair(){return [...waveTouches.values()].slice(0,2)}
+  function pairDistance(){const p=pair();return p.length<2?0:Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y)}
+  function pairMidX(){const p=pair();return p.length<2?0:(p[0].x+p[1].x)/2}
 
   canvas.addEventListener('pointerdown',e=>{
     if(!duration)return;
-    if(e.pointerType!=='touch'){
-      if(!e.isPrimary)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);const x=e.clientX;let moved=false;
-      const move=ev=>{if(Math.abs(ev.clientX-x)>4)moved=true};
-      const up=ev=>{try{canvas.releasePointerCapture(e.pointerId)}catch(_){}canvas.removeEventListener('pointermove',move);canvas.removeEventListener('pointerup',up);canvas.removeEventListener('pointercancel',up);if(!moved&&ev.type==='pointerup')seekTo(timeAtClientX(ev.clientX))};
-      canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerup',up);canvas.addEventListener('pointercancel',up);return;
+    if(e.pointerType==='touch'){
+      e.preventDefault();e.stopImmediatePropagation();
+      waveTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      try{canvas.setPointerCapture(e.pointerId)}catch(_){}
+      if(waveTouches.size===1){
+        waveMode='one';oneStartX=oneLastX=e.clientX;oneMoved=false;
+      }else if(waveTouches.size===2){
+        waveMode='pinch';oneMoved=true;
+        pinchDistance0=Math.max(1,pairDistance());
+        pinchSpan0=viewSpan();
+        pinchAnchor=timeAtClientX(pairMidX());
+      }
+      return;
     }
-    e.preventDefault();e.stopImmediatePropagation();
-    touchPoints.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(!e.isPrimary)return;
+    e.preventDefault();
+    const start=e.clientX;let moved=false;
     try{canvas.setPointerCapture(e.pointerId)}catch(_){}
-    if(touchPoints.size===1){gestureMode='pending';gestureStartX=gestureLastX=e.clientX;gestureMoved=false}
-    else if(touchPoints.size===2){gestureMode='pinch';pinchStartDistance=Math.max(1,distance());pinchStartSpan=viewSpan();pinchAnchorTime=timeAtClientX(midpointX());gestureMoved=true}
+    const move=ev=>{if(Math.abs(ev.clientX-start)>4)moved=true};
+    const up=ev=>{
+      try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
+      canvas.removeEventListener('pointermove',move);
+      canvas.removeEventListener('pointerup',up);
+      canvas.removeEventListener('pointercancel',up);
+      if(!moved&&ev.type==='pointerup')seekTo(timeAtClientX(ev.clientX));
+    };
+    canvas.addEventListener('pointermove',move);
+    canvas.addEventListener('pointerup',up);
+    canvas.addEventListener('pointercancel',up);
   },true);
 
   canvas.addEventListener('pointermove',e=>{
-    if(e.pointerType!=='touch'||!touchPoints.has(e.pointerId))return;
+    if(e.pointerType!=='touch'||!waveTouches.has(e.pointerId))return;
     e.preventDefault();e.stopImmediatePropagation();
-    const p=touchPoints.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
-    if(gestureMode==='pinch'&&touchPoints.size>=2){
-      const d=Math.max(1,distance()),mid=midpointX(),r=waveBox.getBoundingClientRect();
+    const p=waveTouches.get(e.pointerId);p.x=e.clientX;p.y=e.clientY;
+    if(waveMode==='pinch'&&waveTouches.size>=2){
+      const d=Math.max(1,pairDistance());
+      const mid=pairMidX();
+      const r=waveBox.getBoundingClientRect();
       const ratio=clamp((mid-r.left)/Math.max(1,r.width),0,1);
-      const span=clamp(pinchStartSpan*pinchStartDistance/d,Math.min(MIN_VIEW_SPAN,duration),duration);
-      viewA=clamp(pinchAnchorTime-ratio*span,0,Math.max(0,duration-span));viewB=viewA+span;scheduleWave();return;
+      const span=clamp(pinchSpan0*pinchDistance0/d,Math.min(MIN_WAVE_SPAN,duration),duration);
+      setWaveWindow(pinchAnchor-ratio*span,span);
+      return;
     }
-    if(touchPoints.size===1){
-      const dx=e.clientX-gestureLastX;if(Math.abs(e.clientX-gestureStartX)>5){gestureMode='pan';gestureMoved=true}
-      if(gestureMode==='pan'&&viewSpan()<duration){const r=waveBox.getBoundingClientRect();const dt=-dx/Math.max(1,r.width)*viewSpan();viewA=clamp(viewA+dt,0,Math.max(0,duration-viewSpan()));viewB=viewA+viewSpan();scheduleWave()}
-      gestureLastX=e.clientX;
+    if(waveMode==='one'&&waveTouches.size===1){
+      const dx=e.clientX-oneLastX;
+      if(Math.abs(e.clientX-oneStartX)>5)oneMoved=true;
+      if(oneMoved&&viewSpan()<duration){
+        const span=viewSpan();
+        const r=waveBox.getBoundingClientRect();
+        setWaveWindow(viewA-dx/Math.max(1,r.width)*span,span);
+      }
+      oneLastX=e.clientX;
     }
   },true);
 
-  function finishTouch(e){
-    if(e.pointerType!=='touch'||!touchPoints.has(e.pointerId))return;
+  function endWaveTouch(e){
+    if(e.pointerType!=='touch'||!waveTouches.has(e.pointerId))return;
     e.preventDefault();e.stopImmediatePropagation();
-    const wasOnly=touchPoints.size===1;touchPoints.delete(e.pointerId);try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
-    if(wasOnly&&!gestureMoved&&e.type==='pointerup')seekTo(timeAtClientX(e.clientX));
-    if(touchPoints.size===1){const p=[...touchPoints.values()][0];gestureMode='pending';gestureStartX=gestureLastX=p.x;gestureMoved=true}
-    else if(touchPoints.size===0){gestureMode='none';gestureMoved=false}
+    const wasSingle=waveTouches.size===1;
+    waveTouches.delete(e.pointerId);
+    try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
+    if(wasSingle&&!oneMoved&&e.type==='pointerup')seekTo(timeAtClientX(e.clientX));
+    if(waveTouches.size===1){
+      const p=[...waveTouches.values()][0];
+      waveMode='one';oneStartX=oneLastX=p.x;oneMoved=true;
+    }else if(waveTouches.size===0){waveMode='idle';oneMoved=false}
   }
-  canvas.addEventListener('pointerup',finishTouch,true);canvas.addEventListener('pointercancel',finishTouch,true);
-  waveBox.addEventListener('wheel',e=>{if(!duration)return;e.preventDefault();zoomWave(Math.exp(e.deltaY*((e.ctrlKey||e.metaKey)?.008:.0025)),e.clientX)},{passive:false});`;
-  if(!source.includes(old))throw new Error('No se encontró la interacción original.');
+  canvas.addEventListener('pointerup',endWaveTouch,true);
+  canvas.addEventListener('pointercancel',endWaveTouch,true);
+
+  waveBox.addEventListener('wheel',e=>{
+    if(!duration)return;
+    e.preventDefault();e.stopPropagation();
+    zoomAt(e.clientX,Math.exp(e.deltaY*((e.ctrlKey||e.metaKey)?.007:.0024)));
+  },{passive:false});`;
+
+  if(!source.includes(old))throw new Error('No se encontró el bloque original de la onda.');
   source=source.replace(old,replacement);
 
-  source=source.replace('</style>',`\n.editor-tools{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 2px}.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center;transition:.16s}.editor-tool:hover{color:var(--text);transform:translateY(-1px)}.editor-tool:active{transform:scale(.95)}.editor-tool:disabled{opacity:.35;transform:none;cursor:default}.editor-tool.danger{color:#d34b3f}.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n</style>`);
+  source=source.replace('</style>',`\nhtml,body{touch-action:pan-y;overscroll-behavior:none} .wave-box,#waveCanvas{touch-action:none!important}.editor-tools{display:flex;justify-content:center;gap:8px;margin:14px 0 2px}.editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center}.editor-tool:active{transform:scale(.95)}.editor-tool:disabled{opacity:.35}.editor-tool.danger{color:#d34b3f}.editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n</style>`);
 
-  source=source.replace('</body>',`<script>\n(function(){\n const transport=document.querySelector('.transport');if(!transport)return;\n const tools=document.createElement('div');tools.className='editor-tools';tools.innerHTML='\\
- <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\\
- <button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\\
- <button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\\
- <button class="editor-tool danger" id="editDelete" title="Eliminar selección" aria-label="Eliminar selección"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';\n transport.insertAdjacentElement('afterend',tools);\n const undo=[],redo=[];let internal=false;\n function snap(){return [selStart,selEnd]}\n function same(a,b){return a&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001}\n function push(){const s=snap();if(!same(undo[undo.length-1],s)){undo.push(s);if(undo.length>40)undo.shift();redo.length=0}update()}\n function apply(s){if(!s)return;internal=true;setSelection(s[0],s[1],'history');internal=false;update()}\n function update(){document.getElementById('editUndo').disabled=undo.length<2;document.getElementById('editRedo').disabled=!redo.length}\n setTimeout(()=>{push()},0);\n ['pointerdown','change'].forEach(ev=>waveBox.addEventListener(ev,()=>{if(!internal)setTimeout(push,0)},true));\n document.getElementById('editUndo').onclick=()=>{if(undo.length<2)return;redo.push(undo.pop());apply(undo[undo.length-1])};\n document.getElementById('editRedo').onclick=()=>{if(!redo.length)return;const s=redo.pop();undo.push(s);apply(s)};\n document.getElementById('editCut').onclick=()=>{if(!duration)return;push();const t=clamp(audio.currentTime||selStart,0,duration);const mid=(selStart+selEnd)/2;if(t<=mid)setSelection(Math.min(t,selEnd-.1),selEnd,'cut');else setSelection(selStart,Math.max(t,selStart+.1),'cut');push()};\n document.getElementById('editDelete').onclick=()=>{if(!duration)return;push();setSelection(0,duration,'delete');push()};\n update();\n})();\n<\/script>\n</body>`);
+  source=source.replace('</body>',`<script>\n(function(){\n  document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});\n  document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});\n  document.addEventListener('gestureend',e=>e.preventDefault(),{passive:false});\n  let lastTouchEnd=0;document.addEventListener('touchend',e=>{const now=Date.now();if(now-lastTouchEnd<320)e.preventDefault();lastTouchEnd=now},{passive:false});\n\n  const transport=document.querySelector('.transport');if(!transport)return;\n  const tools=document.createElement('div');tools.className='editor-tools';tools.innerHTML='\\
+  <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\\
+  <button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\\
+  <button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\\
+  <button class="editor-tool danger" id="editDelete" title="Limpiar recorte" aria-label="Limpiar recorte"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';\n  transport.insertAdjacentElement('afterend',tools);\n\n  const undo=[],redo=[];let applying=false;\n  const snapshot=()=>[selStart,selEnd];\n  const equal=(a,b)=>a&&b&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001;\n  function record(){const s=snapshot();if(!equal(undo[undo.length-1],s)){undo.push(s);if(undo.length>50)undo.shift();redo.length=0}refresh()}\n  function apply(s){if(!s)return;applying=true;setSelection(s[0],s[1],'history');applying=false;refresh()}\n  function refresh(){editUndo.disabled=undo.length<2;editRedo.disabled=!redo.length}\n  setTimeout(record,0);\n  waveBox.addEventListener('pointerup',()=>{if(!applying)setTimeout(record,0)},true);\n  editUndo.onclick=()=>{if(undo.length<2)return;redo.push(undo.pop());apply(undo[undo.length-1])};\n  editRedo.onclick=()=>{if(!redo.length)return;const s=redo.pop();undo.push(s);apply(s)};\n  editCut.onclick=()=>{\n    if(!duration)return;\n    const t=clamp(Number(audio.currentTime)||0,0,duration);\n    if(t<=selStart+.01||t>=selEnd-.01)return;\n    record();\n    const leftDistance=t-selStart,rightDistance=selEnd-t;\n    if(leftDistance<=rightDistance)setSelection(t,selEnd,'scissors');\n    else setSelection(selStart,t,'scissors');\n    record();\n  };\n  editDelete.onclick=()=>{if(!duration)return;record();setSelection(0,duration,'clear');record()};\n  refresh();\n})();\n<\/script>\n</body>`);
 
   document.open();document.write(source);document.close();
 })().catch(error=>{console.error(error);const loader=document.getElementById('loader');if(loader)loader.textContent='No se pudo abrir Splitter MP3. Recarga la página.'});
