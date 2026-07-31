@@ -820,6 +820,26 @@
   function editorSnapshot(){
     return { clips: clips.map(clip => ({...clip})), activeClip, posCursor };
   }
+  function touchEditorSnapshot(){
+    return {...editorSnapshot(), viewA, viewB};
+  }
+  function restoreTouchEditorSnapshot(state){
+    if (!state || !state.clips.length) return;
+    clips = state.clips.map(clip => ({...clip}));
+    activeClip = clamp(state.activeClip, 0, clips.length - 1);
+    const clip = currentClip();
+    selStart = clip.start;
+    selEnd = clip.end;
+    posCursor = clamp(state.posCursor, clip.start, Math.max(clip.start, clip.end - 0.02));
+    viewA = state.viewA;
+    viewB = state.viewB;
+    waveBox.dataset.viewA = viewA.toFixed(6);
+    waveBox.dataset.viewB = viewB.toFixed(6);
+    syncAll('touch-restore');
+    showCursorUI();
+    updatePlayheadUI(posCursor);
+    refreshEditButtons();
+  }
   function pushEditorHistory(){
     undoSelections.push(editorSnapshot());
     if (undoSelections.length > 60) undoSelections.shift();
@@ -1256,6 +1276,22 @@
     });
   });
 
+  /* ---- Coordinación táctil: una pinza nunca debe recortar ni mover el cursor ---- */
+  const waveTouchPointers=new Map();
+  const pinchConsumedPointers=new Set();
+  let pointerPinchActive=false;
+  let pointerPinchDistance0=0;
+  let pointerPinchSpan0=0;
+  let pointerPinchAnchor=0;
+  let singleTouchStart=null;
+  let touchGestureSnapshot=null;
+
+  function touchReservedForPinch(e){
+    return e.pointerType==='touch'&&(
+      pointerPinchActive||pinchConsumedPointers.has(e.pointerId)||waveTouchPointers.size>1
+    );
+  }
+
   /* ---- Arrastre de asas y del marco ---- */
   function timeAtClientX(clientX){
     const r = waveBox.getBoundingClientRect();
@@ -1263,13 +1299,14 @@
   }
   function dragHandle(el, side){
     el.addEventListener('pointerdown', e => {
-      if (!duration) return;
+      if (!duration || touchReservedForPinch(e)) return;
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
       const startX = e.clientX;
       const startA = selStart, startB = selEnd;
       const rect = waveBox.getBoundingClientRect();
       const move = ev => {
+        if (touchReservedForPinch(ev)) return;
         const delta = ((ev.clientX - startX) / Math.max(1, rect.width)) * viewSpan();
         if (side === 'left')  setSelection(Math.min(startA + delta, startB - MIN_GAP), startB, 'left');
         else                  setSelection(startA, Math.max(startB + delta, startA + MIN_GAP), 'right');
@@ -1300,13 +1337,14 @@
   dragHandle($('hR'), 'right');
 
   $('selFrame').addEventListener('pointerdown', e => {
-    if (!duration) return;
+    if (!duration || touchReservedForPinch(e)) return;
     e.preventDefault();
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     let moved = false;
     const move = ev => {
+      if (touchReservedForPinch(ev)) return;
       if (!moved && Math.abs(ev.clientX - startX) <= 4) return;
       moved = true;
       seekTo(timeAtClientX(ev.clientX));
@@ -1317,7 +1355,7 @@
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
       // Toque o arrastre: recorrer libremente la línea de tiempo.
-      if (!moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
+      if (!touchReservedForPinch(ev) && !moved && ev.type === 'pointerup') seekTo(timeAtClientX(ev.clientX));
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
@@ -1396,12 +1434,6 @@
   },{passive:false,capture:true});
 
   /* Pellizco multitáctil basado en Pointer Events. */
-  const waveTouchPointers=new Map();
-  let pointerPinchActive=false;
-  let pointerPinchDistance0=0;
-  let pointerPinchSpan0=0;
-  let pointerPinchAnchor=0;
-  let singleTouchStart=null;
 
   function pointerPair(){return [...waveTouchPointers.values()].slice(0,2)}
   function pointerPairDistance(){
@@ -1415,18 +1447,25 @@
 
   waveBox.addEventListener('pointerdown',e=>{
     if(!duration||e.pointerType!=='touch')return;
+    pinchConsumedPointers.delete(e.pointerId);
     waveTouchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if(waveTouchPointers.size===1){
+      touchGestureSnapshot=touchEditorSnapshot();
       singleTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false,blocked:!!e.target.closest('.handle,.playhead')};
     }
-    if(waveTouchPointers.size>=2){
+    if(waveTouchPointers.size===2){
       e.preventDefault();
-      e.stopImmediatePropagation();
+      waveTouchPointers.forEach((_,id)=>pinchConsumedPointers.add(id));
+      if(playMode)pausePreview();
+      restoreTouchEditorSnapshot(touchGestureSnapshot);
       pointerPinchActive=true;
       singleTouchStart=null;
       pointerPinchDistance0=Math.max(1,pointerPairDistance());
       pointerPinchSpan0=viewSpan();
       pointerPinchAnchor=timeAtClientX(pointerPairMidX());
+    }else if(waveTouchPointers.size>2){
+      e.preventDefault();
+      pinchConsumedPointers.add(e.pointerId);
     }
   },true);
 
@@ -1438,13 +1477,15 @@
     if(singleTouchStart&&singleTouchStart.id===e.pointerId){
       if(Math.hypot(e.clientX-singleTouchStart.x,e.clientY-singleTouchStart.y)>5){
         singleTouchStart.moved=true;
-        if(!singleTouchStart.blocked&&!pointerPinchActive){e.preventDefault();seekTo(timeAtClientX(e.clientX));}
+        if(!singleTouchStart.blocked&&!touchReservedForPinch(e)){e.preventDefault();seekTo(timeAtClientX(e.clientX));}
       }
     }
-    if(!pointerPinchActive||waveTouchPointers.size<2)return;
+    if(!pointerPinchActive||waveTouchPointers.size<2){
+      if(pinchConsumedPointers.has(e.pointerId))e.preventDefault();
+      return;
+    }
     waveBox.dataset.pinchMoves=String((Number(waveBox.dataset.pinchMoves)||0)+1);
     e.preventDefault();
-    e.stopImmediatePropagation();
     const distance=Math.max(1,pointerPairDistance());
     const midpoint=pointerPairMidX();
     const rect=waveBox.getBoundingClientRect();
@@ -1456,13 +1497,11 @@
   function endWaveTouchPointer(e){
     if(e.pointerType!=='touch'||!waveTouchPointers.has(e.pointerId))return;
     const wasPinching=pointerPinchActive;
+    const wasConsumed=pinchConsumedPointers.has(e.pointerId);
     const wasSingle=waveTouchPointers.size===1;
-    if(wasPinching){
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
+    if(wasPinching||wasConsumed)e.preventDefault();
     waveTouchPointers.delete(e.pointerId);
-    if(wasSingle&&singleTouchStart&&singleTouchStart.id===e.pointerId&&!singleTouchStart.moved&&e.type==='pointerup'){
+    if(!wasConsumed&&wasSingle&&singleTouchStart&&singleTouchStart.id===e.pointerId&&!singleTouchStart.moved&&e.type==='pointerup'){
       seekTo(timeAtClientX(e.clientX));
     }
     if(waveTouchPointers.size<2)pointerPinchActive=false;
@@ -1471,7 +1510,9 @@
       singleTouchStart={id,x:p.x,y:p.y,moved:true,blocked:true};
     }else if(waveTouchPointers.size===0){
       singleTouchStart=null;
+      touchGestureSnapshot=null;
     }
+    if(wasConsumed)setTimeout(()=>pinchConsumedPointers.delete(e.pointerId),0);
   }
   waveBox.addEventListener('pointerup',endWaveTouchPointer,true);
   waveBox.addEventListener('pointercancel',endWaveTouchPointer,true);
@@ -1618,11 +1659,11 @@
 
   // arrastrar la línea de reproducción para adelantar o atrasar
   $('playhead').addEventListener('pointerdown', e => {
-    if (!duration) return;
+    if (!duration || touchReservedForPinch(e)) return;
     e.preventDefault();
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
-    const move = ev => { seekTo(timeAtClientX(ev.clientX)); };
+    const move = ev => { if (!touchReservedForPinch(ev)) seekTo(timeAtClientX(ev.clientX)); };
     const up = () => {
       try{el.releasePointerCapture(e.pointerId)}catch(_){}
       el.removeEventListener('pointermove', move);
