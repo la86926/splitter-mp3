@@ -364,19 +364,6 @@
     line-height:1.7;
   }
 
-  /* Toast */
-  .toast{
-    position:fixed; left:50%; bottom:28px; transform:translate(-50%, 20px);
-    background:var(--text); color:var(--bg);
-    font-size:13.5px; font-weight:500;
-    padding:11px 20px; border-radius:999px;
-    box-shadow:0 8px 26px rgba(0,0,0,.28);
-    opacity:0; pointer-events:none;
-    transition:opacity .25s ease, transform .25s ease;
-    max-width:min(92vw, 520px); text-align:center; z-index:50;
-  }
-  .toast.show{ opacity:1; transform:translate(-50%, 0); }
-
   @media (prefers-reduced-motion: reduce){
     *{ transition:none !important; animation:none !important; }
   }
@@ -608,8 +595,6 @@
   </section>
 </div>
 
-<div class="toast" id="toast" role="status" aria-live="polite"></div>
-
 <script>
 (function(){
   'use strict';
@@ -636,15 +621,6 @@
   function baseOf(name){
     const i = name.lastIndexOf('.');
     return i >= 0 ? name.slice(0, i) : name;
-  }
-
-  let toastTimer = null;
-  function toast(msg){
-    const el = $('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('show'), 3800);
   }
 
   /* ============ Tema (claro / oscuro / sistema) ============ */
@@ -950,7 +926,6 @@
       audioBuf = null; peaks = null; duration = 0;
       const d = await metaDuration(previewEl);
       if (d > 0) duration = d;
-      toast('No se pudo generar la onda de este formato. Aún puedes escucharlo y cortar con los campos de tiempo.');
     }
 
     if (!duration) duration = 0;
@@ -1666,7 +1641,7 @@
   async function startPlayback(){
     if (!duration || !clips.length) return;
     if (playbackReachedEnd && loopMode !== 'clip') selectPlaybackClip(0, clips[0].start);
-    if (!(selEnd > selStart)){ toast('Ajusta el recorte.'); return; }
+    if (!(selEnd > selStart)) return;
     playbackReachedEnd = false;
     if (loopMode === 'clip') playbackLoopClip = activeClip;
     let from = posCursor;
@@ -1693,7 +1668,7 @@
       startWA(from);
       started = true;
     }
-    if (!started){ toast('La vista previa no está disponible para este formato.'); return; }
+    if (!started) return;
 
     posCursor = from;
     $('icoPlay').style.display = 'none';
@@ -1760,7 +1735,7 @@
   $('btnCut').addEventListener('click', async () => {
     if (!cutFile) return;
     const plan = clips.filter(clip => clip.end > clip.start + 0.001).map(clip => ({...clip}));
-    if (!plan.length){ toast('Debe quedar al menos un fragmento para exportar.'); return; }
+    if (!plan.length) return;
     pausePreview();
 
     const ext = extOf(cutFile.name) || 'mp3';
@@ -1825,7 +1800,6 @@
       ffCleanup(tempNames);
     } catch(err){
       stat.textContent = '';
-      toast('No se pudo exportar el audio editado. Revisa tu conexión (el motor se descarga la primera vez) e inténtalo de nuevo.');
       ffCleanup(tempNames);
     } finally {
       btn.disabled = false;
@@ -1929,7 +1903,6 @@
       ffCleanup(names);
     } catch(err){
       stat.textContent = '';
-      toast('No se pudo unir los archivos. Verifica que compartan el mismo formato e inténtalo de nuevo.');
       ffCleanup(names);
     } finally {
       btn.disabled = false;
@@ -1979,13 +1952,11 @@
     if(!duration)return;
     if(playMode)pausePreview();
     const index=clipIndexAtTime(posCursor);
-    if(index<0){toast('Selecciona un fragmento.');return;}
+    if(index<0)return;
     if(index!==activeClip)activateClip(index,posCursor);
     const clip=currentClip();
     const t=clamp(posCursor,clip.start,clip.end);
-    if(t<=clip.start+MIN_GAP||t>=clip.end-MIN_GAP){
-      toast('Aleja el cursor de los extremos.');return;
-    }
+    if(t<=clip.start+MIN_GAP||t>=clip.end-MIN_GAP)return;
     pushEditorHistory();
     playbackReachedEnd=false;
     const left=newClip(clip.start,t),right=newClip(t,clip.end);
@@ -1993,10 +1964,9 @@
     activeClip+=1;
     selStart=right.start;selEnd=right.end;posCursor=t;
     syncAll('scissors');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
-    toast('Corte creado.');
   });
   editDelete.addEventListener('click',()=>{
-    if(!duration||clips.length<=1){toast('Debe quedar un fragmento.');return;}
+    if(!duration||clips.length<=1)return;
     if(playMode)pausePreview();
     pushEditorHistory();
     const removed=activeClip;
@@ -2005,7 +1975,6 @@
     const clip=currentClip();
     selStart=clip.start;selEnd=clip.end;posCursor=clip.start;
     resetView();syncAll('delete');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
-    toast('Fragmento eliminado.');
   });
   refreshEditButtons();
 
