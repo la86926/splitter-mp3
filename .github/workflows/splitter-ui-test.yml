@@ -7,15 +7,13 @@ on:
       - index.html
       - splitter-app.html
       - .github/workflows/splitter-ui-test.yml
-    paths-ignore:
-      - splitter-test-status.json
   workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  TEST_REVISION: 1
+  TEST_REVISION: 2
 
 jobs:
   browser-test:
