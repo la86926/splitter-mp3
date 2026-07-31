@@ -393,6 +393,15 @@
   .clip-segment-mark.active{opacity:1;border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-soft)}
   .clip-segment-mark span{position:absolute;top:5px;left:50%;transform:translateX(-50%);min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--surface);color:var(--accent-strong);border:1px solid var(--border);font-size:10px;font-weight:700;line-height:16px;text-align:center;font-variant-numeric:tabular-nums}
   .clip-segment-mark.active span{background:var(--accent);border-color:var(--accent);color:#fff}
+  .wave-nav{position:relative;height:38px;margin-top:7px;touch-action:none;user-select:none;-webkit-user-select:none}
+  .wave-nav[hidden]{display:none}
+  .wave-nav-label{position:absolute;top:0;left:0;font-size:9.5px;font-weight:650;letter-spacing:.055em;text-transform:uppercase;color:var(--text-3)}
+  .wave-nav-track{position:absolute;left:0;right:0;top:19px;height:10px;overflow:hidden;border:1px solid var(--border);border-radius:999px;background:var(--surface-2)}
+  .wave-nav-segment{position:absolute;top:0;bottom:0;background:var(--wave-idle);border-right:1px solid var(--surface)}
+  .wave-nav-segment:last-child{border-right:0}
+  .wave-nav-window{position:absolute;top:13px;height:23px;min-width:34px;padding:0;border:2px solid var(--accent);border-radius:8px;background:var(--accent-soft);box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:grab;touch-action:none}
+  .wave-nav-window:active{cursor:grabbing}
+  .wave-nav-window::after{content:'';position:absolute;left:50%;top:6px;width:15px;height:7px;transform:translateX(-50%);border-top:2px solid var(--accent);border-bottom:2px solid var(--accent);opacity:.9}
 
 </style>
 </head>
@@ -483,6 +492,11 @@
             <div class="time-tag pos" id="tagP" style="display:none">0:00.0</div>
           </div>
           <div class="ruler"><span id="rulerStart">0:00</span><span id="rulerMid">—</span><span id="rulerEnd">—</span></div>
+          <div class="wave-nav" id="waveNav" hidden>
+            <span class="wave-nav-label">Desplazar onda ampliada</span>
+            <div class="wave-nav-track" id="waveNavTrack"></div>
+            <button type="button" class="wave-nav-window" id="waveNavWindow" role="slider" aria-label="Desplazar la vista ampliada del audio" aria-valuemin="0" aria-valuenow="0"></button>
+          </div>
         </div>
 
         <div class="transport">
@@ -741,6 +755,7 @@
   clipLayer.className = 'clip-layer';
   clipLayer.setAttribute('aria-hidden', 'true');
   waveBox.insertBefore(clipLayer, $('playhead'));
+  const waveNav = $('waveNav'), waveNavTrack = $('waveNavTrack'), waveNavWindow = $('waveNavWindow');
 
   function newClip(start, end){ return { id: ++clipSerial, start, end }; }
   function currentClip(){ return clips[activeClip] || null; }
@@ -962,6 +977,7 @@
       updateRuler();
       layoutSelection();
       drawWave();
+      layoutNavigator();
       if (duration) updatePlayheadUI(currentPos());
     });
   }
@@ -988,6 +1004,7 @@
     canvas.height = Math.round(r.height * dpr);
     drawWave();
     layoutSelection();
+    layoutNavigator();
   }
 
   function cssVar(name){
@@ -1101,6 +1118,82 @@
       clipLayer.appendChild(mark);
     });
   }
+
+  function navigatorMetrics(){
+    const total = keptDuration();
+    const width = waveNav.clientWidth || waveBox.clientWidth || 1;
+    const span = Math.min(viewSpan(), Math.max(0.001, total));
+    const displayWidth = Math.min(width, Math.max(34, (span / Math.max(0.001, total)) * width));
+    const travel = Math.max(0, width - displayWidth);
+    const maxStart = Math.max(0, total - span);
+    const left = maxStart > 0 ? (viewA / maxStart) * travel : 0;
+    return { total, width, span, displayWidth, travel, maxStart, left };
+  }
+  function layoutNavigator(){
+    const total = keptDuration();
+    const visible = total > 0 && isZoomed();
+    waveNav.hidden = !visible;
+    if (!visible) return;
+    const metrics = navigatorMetrics();
+    waveNavWindow.style.left = metrics.left + 'px';
+    waveNavWindow.style.width = metrics.displayWidth + 'px';
+    waveNavWindow.setAttribute('aria-valuemax', metrics.maxStart.toFixed(3));
+    waveNavWindow.setAttribute('aria-valuenow', viewA.toFixed(3));
+    waveNavWindow.setAttribute('aria-valuetext', 'Vista desde ' + fmtTime(viewA, true) + ' hasta ' + fmtTime(viewB, true));
+    waveNavTrack.innerHTML = '';
+    let offset = 0;
+    clips.forEach((clip, index) => {
+      const length = Math.max(0, clip.end - clip.start);
+      const segment = document.createElement('i');
+      segment.className = 'wave-nav-segment';
+      segment.style.left = (offset / total * 100) + '%';
+      segment.style.width = (length / total * 100) + '%';
+      segment.style.opacity = index === activeClip ? '1' : '.62';
+      waveNavTrack.appendChild(segment);
+      offset += length;
+    });
+  }
+
+  let navigatorDrag = null;
+  waveNav.addEventListener('pointerdown', e => {
+    if (waveNav.hidden || !isZoomed()) return;
+    e.preventDefault();
+    const rect = waveNav.getBoundingClientRect();
+    if (!e.target.closest('#waveNavWindow')){
+      const ratio = clamp((e.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+      setPreciseView(ratio * keptDuration() - viewSpan() / 2, viewSpan());
+      layoutNavigator();
+    }
+    const metrics = navigatorMetrics();
+    navigatorDrag = { id:e.pointerId, x:e.clientX, start:viewA, travel:metrics.travel, maxStart:metrics.maxStart };
+    try { waveNav.setPointerCapture(e.pointerId); } catch(_){}
+  });
+  waveNav.addEventListener('pointermove', e => {
+    if (!navigatorDrag || e.pointerId !== navigatorDrag.id) return;
+    e.preventDefault();
+    const delta = e.clientX - navigatorDrag.x;
+    const timeDelta = navigatorDrag.travel > 0 ? (delta / navigatorDrag.travel) * navigatorDrag.maxStart : 0;
+    setPreciseView(navigatorDrag.start + timeDelta, viewSpan());
+  });
+  function finishNavigatorDrag(e){
+    if (!navigatorDrag || e.pointerId !== navigatorDrag.id) return;
+    try { waveNav.releasePointerCapture(e.pointerId); } catch(_){}
+    navigatorDrag = null;
+  }
+  waveNav.addEventListener('pointerup', finishNavigatorDrag);
+  waveNav.addEventListener('pointercancel', finishNavigatorDrag);
+  waveNavWindow.addEventListener('keydown', e => {
+    if (!isZoomed()) return;
+    let start = viewA;
+    const step = Math.max(.05, viewSpan() * .15);
+    if (e.key === 'ArrowLeft') start -= step;
+    else if (e.key === 'ArrowRight') start += step;
+    else if (e.key === 'Home') start = 0;
+    else if (e.key === 'End') start = keptDuration() - viewSpan();
+    else return;
+    e.preventDefault();
+    setPreciseView(start, viewSpan());
+  });
 
   function setSelection(a, b, source){
     const oldTotal = keptDuration();
