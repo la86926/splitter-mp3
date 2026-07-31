@@ -1,0 +1,227 @@
+from pathlib import Path
+import re
+
+APP = Path('splitter-app.html')
+INDEX = Path('index.html')
+source = APP.read_text(encoding='utf-8')
+
+source = re.sub(
+    r"<meta\s+name=['\"]viewport['\"][^>]*>",
+    '<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">',
+    source,
+    count=1,
+    flags=re.I,
+)
+source = re.sub(r'\s*<footer>[\s\S]*?</footer>', '', source, count=1, flags=re.I)
+
+css = r'''
+  /* SPLITTER_NATIVE_PATCH_V2 */
+  html,body{overscroll-behavior:none!important}
+  body{touch-action:pan-y!important}
+  .wave-box,#waveCanvas,.sel-frame,.handle,.playhead{touch-action:none!important}
+  .editor-tools{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 2px}
+  .editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center;transition:transform .15s ease,color .15s ease,background .15s ease}
+  .editor-tool:hover{color:var(--text);transform:translateY(-1px)}
+  .editor-tool:active{transform:scale(.95)}
+  .editor-tool:disabled{opacity:.35;cursor:default;transform:none}
+  .editor-tool.danger{color:#d34b3f}
+  .editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+'''
+if 'SPLITTER_NATIVE_PATCH_V2' not in source:
+    source = source.replace('</style>', css + '\n</style>', 1)
+
+if 'SPLITTER_NATIVE_INTERACTION_V2' not in source:
+    interaction_start = source.find('  /* ---- Interacción sobre la onda:')
+    reproduction_start = source.find('  /* ---- Reproducción ---- */', interaction_start)
+    if interaction_start < 0 or reproduction_start < 0:
+        raise RuntimeError('No se encontró el bloque original de interacción de la onda')
+
+    interaction = r'''  /* SPLITTER_NATIVE_INTERACTION_V2 */
+  /* ---- Interacción precisa sobre toda la onda, incluida la selección ---- */
+  document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
+  document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});
+  document.addEventListener('gestureend',e=>e.preventDefault(),{passive:false});
+  document.addEventListener('dblclick',e=>e.preventDefault(),{capture:true});
+  window.addEventListener('wheel',e=>{
+    if((e.ctrlKey||e.metaKey)&&!waveBox.contains(e.target))e.preventDefault();
+  },{passive:false,capture:true});
+
+  let lastTouchEnd=0;
+  document.addEventListener('touchend',e=>{
+    const now=Date.now();
+    if(now-lastTouchEnd<320)e.preventDefault();
+    lastTouchEnd=now;
+  },{passive:false,capture:true});
+
+  const MIN_PRECISE_SPAN=.3;
+  function preciseMinSpan(){return duration?Math.min(MIN_PRECISE_SPAN,duration):MIN_PRECISE_SPAN}
+  function setPreciseView(start,span){
+    if(!duration)return;
+    span=clamp(span,preciseMinSpan(),duration);
+    start=clamp(start,0,Math.max(0,duration-span));
+    viewA=start;viewB=start+span;scheduleWave();
+  }
+  function zoomWaveAt(clientX,factor){
+    if(!duration||!isFinite(factor)||factor<=0)return;
+    const rect=waveBox.getBoundingClientRect();
+    const ratio=clamp((clientX-rect.left)/Math.max(1,rect.width),0,1);
+    const oldSpan=viewSpan();
+    const anchor=viewA+ratio*oldSpan;
+    const newSpan=clamp(oldSpan*factor,preciseMinSpan(),duration);
+    setPreciseView(anchor-ratio*newSpan,newSpan);
+  }
+
+  canvas.addEventListener('pointerdown',e=>{
+    if(!duration||!e.isPrimary)return;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    const startX=e.clientX;let moved=false;
+    const move=ev=>{if(Math.abs(ev.clientX-startX)>4)moved=true};
+    const up=ev=>{
+      try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
+      canvas.removeEventListener('pointermove',move);
+      canvas.removeEventListener('pointerup',up);
+      canvas.removeEventListener('pointercancel',up);
+      if(!moved&&ev.type==='pointerup')seekTo(timeAtClientX(ev.clientX));
+    };
+    canvas.addEventListener('pointermove',move);
+    canvas.addEventListener('pointerup',up);
+    canvas.addEventListener('pointercancel',up);
+  });
+
+  waveBox.addEventListener('wheel',e=>{
+    if(!duration)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    zoomWaveAt(e.clientX,Math.exp(e.deltaY*.0024));
+  },{passive:false,capture:true});
+
+  let pinchActive=false,pinchStartDistance=0,pinchStartSpan=0,pinchAnchorTime=0;
+  function touchDistance(t){const a=t[0],b=t[1];return Math.hypot(b.clientX-a.clientX,b.clientY-a.clientY)}
+  function touchMidX(t){return (t[0].clientX+t[1].clientX)/2}
+
+  waveBox.addEventListener('touchstart',e=>{
+    if(!duration||e.touches.length<2)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    pinchActive=true;
+    pinchStartDistance=Math.max(1,touchDistance(e.touches));
+    pinchStartSpan=viewSpan();
+    pinchAnchorTime=timeAtClientX(touchMidX(e.touches));
+  },{passive:false,capture:true});
+  waveBox.addEventListener('touchmove',e=>{
+    if(!pinchActive||e.touches.length<2)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const distance=Math.max(1,touchDistance(e.touches));
+    const midpoint=touchMidX(e.touches);
+    const rect=waveBox.getBoundingClientRect();
+    const ratio=clamp((midpoint-rect.left)/Math.max(1,rect.width),0,1);
+    const span=clamp(pinchStartSpan*pinchStartDistance/distance,preciseMinSpan(),duration);
+    setPreciseView(pinchAnchorTime-ratio*span,span);
+  },{passive:false,capture:true});
+  function finishPinch(e){
+    if(!pinchActive)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    if(e.touches.length<2)pinchActive=false;
+  }
+  waveBox.addEventListener('touchend',finishPinch,{passive:false,capture:true});
+  waveBox.addEventListener('touchcancel',finishPinch,{passive:false,capture:true});
+  waveBox.addEventListener('pointermove',e=>{
+    if(pinchActive&&e.pointerType==='touch'){e.preventDefault();e.stopImmediatePropagation()}
+  },true);
+  waveBox.addEventListener('pointerup',e=>{
+    if(pinchActive&&e.pointerType==='touch'){e.preventDefault();e.stopImmediatePropagation()}
+  },true);
+
+'''
+    source = source[:interaction_start] + interaction + source[reproduction_start:]
+
+if 'SPLITTER_SCISSORS_TOOLBAR_V2' not in source:
+    startup = '  /* ============ Arranque ============ */'
+    if startup not in source:
+        raise RuntimeError('No se encontró el arranque del editor')
+
+    toolbar = r'''  /* SPLITTER_SCISSORS_TOOLBAR_V2 */
+  const oldEditorTools=document.querySelector('.editor-tools');
+  if(oldEditorTools)oldEditorTools.remove();
+  const editorTools=document.createElement('div');
+  editorTools.className='editor-tools';
+  editorTools.innerHTML='\
+  <button class="editor-tool" id="editUndo" title="Atrás" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg></button>\
+  <button class="editor-tool" id="editRedo" title="Adelante" aria-label="Adelante"><svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg></button>\
+  <button class="editor-tool" id="editCut" title="Recortar en el cursor" aria-label="Recortar en el cursor"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.7 8.4 10.3 6.2M8.7 15.6 19 9.4"/></svg></button>\
+  <button class="editor-tool danger" id="editDelete" title="Limpiar recorte" aria-label="Limpiar recorte"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>';
+  document.querySelector('.transport').insertAdjacentElement('afterend',editorTools);
+
+  const editUndo=$('editUndo'),editRedo=$('editRedo'),editCut=$('editCut'),editDelete=$('editDelete');
+  const undoSelections=[],redoSelections=[];
+  const selectionSnapshot=()=>[selStart,selEnd];
+  const sameSelection=(a,b)=>a&&b&&Math.abs(a[0]-b[0])<.001&&Math.abs(a[1]-b[1])<.001;
+  function refreshEditButtons(){editUndo.disabled=!undoSelections.length;editRedo.disabled=!redoSelections.length}
+  function rememberBeforeEdit(){
+    const snap=selectionSnapshot();
+    if(!sameSelection(undoSelections[undoSelections.length-1],snap))undoSelections.push(snap);
+    if(undoSelections.length>50)undoSelections.shift();
+    redoSelections.length=0;refreshEditButtons();
+  }
+  function applySelectionSnapshot(snap){
+    if(!snap)return;
+    setSelection(snap[0],snap[1],'history');
+    posCursor=clamp(posCursor,selStart,selEnd);
+    showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
+  }
+  editUndo.addEventListener('click',()=>{
+    if(!undoSelections.length)return;
+    redoSelections.push(selectionSnapshot());applySelectionSnapshot(undoSelections.pop());
+  });
+  editRedo.addEventListener('click',()=>{
+    if(!redoSelections.length)return;
+    undoSelections.push(selectionSnapshot());applySelectionSnapshot(redoSelections.pop());
+  });
+  editCut.addEventListener('click',()=>{
+    if(!duration)return;
+    if(playMode)pausePreview();
+    const t=clamp(posCursor,selStart,selEnd);
+    if(t<=selStart+MIN_GAP||t>=selEnd-MIN_GAP){
+      toast('Coloca el cursor vertical dentro de la selección.');return;
+    }
+    rememberBeforeEdit();
+    const left=t-selStart,right=selEnd-t;
+    if(left<=right)setSelection(t,selEnd,'scissors');
+    else setSelection(selStart,t,'scissors');
+    posCursor=t;showCursorUI();updatePlayheadUI(posCursor);
+    toast('Recorte ajustado exactamente en '+fmtTime(t,true)+'.');
+  });
+  editDelete.addEventListener('click',()=>{
+    if(!duration)return;
+    rememberBeforeEdit();setSelection(0,duration,'clear');
+    posCursor=0;showCursorUI();updatePlayheadUI(0);
+  });
+  refreshEditButtons();
+
+'''
+    source = source.replace(startup, toolbar + startup, 1)
+
+APP.write_text(source, encoding='utf-8')
+
+index = '''<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Splitter MP3</title>
+<style>html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}</style>
+</head>
+<body>
+<div id="loader">Abriendo Splitter MP3…</div>
+<script>
+(async()=>{
+  const response=await fetch('./splitter-app.html?v=20260731-native10',{cache:'no-store'});
+  if(!response.ok)throw new Error('No se pudo cargar Splitter MP3.');
+  const source=await response.text();
+  document.open();document.write(source);document.close();
+})().catch(error=>{console.error(error);document.getElementById('loader').textContent='No se pudo abrir Splitter MP3. Recarga la página.'});
+<\/script>
+</body>
+</html>
+'''
+INDEX.write_text(index, encoding='utf-8')
