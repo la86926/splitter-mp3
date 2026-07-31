@@ -32,14 +32,21 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, hasTouch: true });
   const page = await context.newPage();
   const pageErrors = [];
-  page.on('pageerror', (error) => pageErrors.push(String(error)));
+  page.on('pageerror', (error) => {
+    pageErrors.push(String(error));
+    console.error('PAGE ERROR:', String(error));
+  });
   page.on('console', (message) => console.log('BROWSER:', message.type(), message.text()));
 
-  await page.goto('http://127.0.0.1:4173/?verification=native15', { waitUntil: 'networkidle' });
+  await page.goto('http://127.0.0.1:4173/?verification=native16', { waitUntil: 'networkidle' });
   await page.waitForSelector('#fileCut', { state: 'attached', timeout: 30000 });
   await page.setInputFiles('#fileCut', 'sample.wav');
-  await page.waitForSelector('#editor:not([hidden])', { timeout: 30000 });
-  await page.waitForFunction(() => document.querySelector('#roEnd')?.textContent !== '0:00.0');
+  await page.waitForTimeout(1200);
+  const editorHidden = await page.locator('#editor').evaluate((element) => element.hidden);
+  if (editorHidden) {
+    throw new Error(`El editor no abrió el audio. Errores: ${pageErrors.join(' | ') || 'ninguno registrado'}`);
+  }
+  await page.waitForFunction(() => document.querySelector('#roEnd')?.textContent !== '0:00.0', { timeout: 30000 });
 
   const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
   if (!viewport.includes('maximum-scale=1') || !viewport.includes('user-scalable=no')) {
