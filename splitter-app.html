@@ -247,6 +247,24 @@
   }
   .zoom-btn svg{ width:18px; height:18px; }
 
+  .repeat-control{
+    display:flex; align-items:center; justify-content:center; gap:9px;
+    margin:12px 0 2px; flex-wrap:wrap;
+  }
+  .repeat-label{ font-size:11px; font-weight:650; color:var(--text-3); letter-spacing:.055em; text-transform:uppercase; }
+  .repeat-modes{
+    display:inline-flex; align-items:center; gap:3px; padding:3px;
+    border-radius:999px; background:var(--surface-2); border:1px solid var(--border);
+  }
+  .repeat-mode{
+    min-height:32px; padding:6px 12px; border:0; border-radius:999px;
+    background:transparent; color:var(--text-2); font-size:12px; font-weight:600;
+    transition:background var(--dur) ease, color var(--dur) ease, box-shadow var(--dur) ease;
+  }
+  .repeat-mode[aria-pressed="true"]{
+    background:var(--surface); color:var(--accent-strong); box-shadow:0 1px 4px rgba(0,0,0,.12);
+  }
+
   /* Entradas de tiempo */
   .time-grid{
     display:grid; grid-template-columns:1fr 1fr; gap:18px;
@@ -515,6 +533,15 @@
           </div>
         </div>
 
+        <div class="repeat-control" role="group" aria-label="Modo de repetición">
+          <span class="repeat-label">Repetición</span>
+          <div class="repeat-modes">
+            <button type="button" class="repeat-mode" data-loop-mode="none" aria-pressed="true">No repetir</button>
+            <button type="button" class="repeat-mode" data-loop-mode="clip" aria-pressed="false">Fragmento</button>
+            <button type="button" class="repeat-mode" data-loop-mode="all" aria-pressed="false">Todo</button>
+          </div>
+        </div>
+
         <div class="time-grid">
           <div class="time-field">
             <span class="lbl">Inicio del recorte</span>
@@ -748,6 +775,7 @@
   let posCursor = 0;         // posición actual del cursor de reproducción
   let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
   let previewEl = null, previewURL = null, playMode = null; // 'el' (elemento <audio>) | 'wa' (Web Audio)
+  let loopMode = 'none', playbackLoopClip = 0, playbackReachedEnd = false;
 
   const waveBox = $('waveBox'), canvas = $('waveCanvas'), ctx2d = canvas.getContext('2d');
   const HANDLE_W = 22, MIN_GAP = 0.1;
@@ -848,6 +876,7 @@
   }
   function activateClip(index, cursor = null){
     if (!clips.length) return;
+    playbackReachedEnd = false;
     activeClip = clamp(index, 0, clips.length - 1);
     const clip = currentClip();
     selStart = clip.start;
@@ -859,6 +888,19 @@
     updatePlayheadUI(posCursor);
     refreshEditButtons();
   }
+
+  function setLoopMode(mode){
+    if (!['none','clip','all'].includes(mode)) mode = 'none';
+    loopMode = mode;
+    if (mode === 'clip') playbackLoopClip = activeClip;
+    document.querySelectorAll('[data-loop-mode]').forEach(button => {
+      const active = button.dataset.loopMode === mode;
+      button.setAttribute('aria-pressed', String(active));
+    });
+  }
+  document.querySelectorAll('[data-loop-mode]').forEach(button => {
+    button.addEventListener('click', () => setLoopMode(button.dataset.loopMode));
+  });
 
   /* ---- Carga de archivo ---- */
   function bindDropzone(dz, input, onFiles){
@@ -919,6 +961,8 @@
     if (!duration) duration = 0;
     clips = duration ? [newClip(0, duration)] : [];
     activeClip = 0;
+    playbackReachedEnd = false;
+    setLoopMode('none');
     undoSelections.length = 0;
     redoSelections.length = 0;
     selStart = 0;
@@ -1538,10 +1582,10 @@
     $('roPos').textContent = fmtTime(projectTime, true);
   }
 
-  // Pausa: se detiene EXACTAMENTE donde va sonando; al reanudar continúa desde ahí
+  // Pausa: se detiene exactamente donde va sonando; al reanudar continúa desde ahí.
   function pausePreview(){
     if (!playMode) return;
-    posCursor = currentPos();
+    posCursor = clamp(currentPos(), selStart, selEnd);
     if (playMode === 'el'){
       try { previewEl.pause(); } catch(e){}
     } else {
@@ -1552,36 +1596,115 @@
     cancelAnimationFrame(rafId);
     $('icoPlay').style.display = '';
     $('icoPause').style.display = 'none';
+    $('playBtn').setAttribute('aria-label','Reproducir');
     updatePlayheadUI(posCursor);
   }
-  // Reinicio total (solo al cargar otro archivo)
+
+  // Reinicio total (sólo al cargar otro archivo).
   function resetPreview(){
     pausePreview();
     if (previewEl){ try { previewEl.pause(); } catch(e){} }
     posCursor = 0;
+    playbackReachedEnd = false;
     $('playhead').style.display = 'none';
     $('tagP').style.display = 'none';
     $('roPos').textContent = '0:00.0';
   }
-  // Al terminar la selección: pausa y el cursor vuelve al inicio del recorte
+
+  function selectPlaybackClip(index, from){
+    activeClip = clamp(index, 0, clips.length - 1);
+    const clip = currentClip();
+    selStart = clip.start;
+    selEnd = clip.end;
+    posCursor = clamp(from == null ? clip.start : from, clip.start, clip.end);
+    syncAll('playback');
+    refreshEditButtons();
+    showCursorUI();
+    updatePlayheadUI(posCursor);
+  }
+
+  // En modo normal se detiene al final del último fragmento conservado.
   function finishPlayback(){
+    const end = selEnd;
     pausePreview();
-    posCursor = selStart;
+    posCursor = end;
+    playbackReachedEnd = true;
+    showCursorUI();
     updatePlayheadUI(posCursor);
   }
 
   function startWA(from){
+    const clip = currentClip();
+    if (!clip) return;
     const src = audioCtx.createBufferSource();
     src.buffer = audioBuf;
     src.connect(audioCtx.destination);
-    src.start(0, from, Math.max(0.05, selEnd - from));
+    src.start(0, from, Math.max(0.01, clip.end - from));
     playingSrc = src; playT0 = audioCtx.currentTime; playFrom = from; playMode = 'wa';
-    src.onended = () => { if (playingSrc === src && playMode === 'wa') finishPlayback(); };
+    src.onended = () => {
+      if (playingSrc !== src || playMode !== 'wa') return;
+      playingSrc = null;
+      advancePlaybackSegment();
+    };
+  }
+
+  function nextPlaybackClip(){
+    if (loopMode === 'clip') return clamp(playbackLoopClip, 0, clips.length - 1);
+    if (activeClip < clips.length - 1) return activeClip + 1;
+    if (loopMode === 'all') return 0;
+    return -1;
+  }
+
+  function advancePlaybackSegment(){
+    if (!playMode || !clips.length) return;
+    const engine = playMode;
+    const next = nextPlaybackClip();
+    if (next < 0){ finishPlayback(); return; }
+
+    if (engine === 'wa'){
+      const src = playingSrc;
+      playingSrc = null;
+      if (src){ try { src.stop(); } catch(e){} }
+    }
+
+    const clip = clips[next];
+    selectPlaybackClip(next, clip.start);
+    if (engine === 'el'){
+      playMode = 'el';
+      try {
+        previewEl.currentTime = clip.start;
+        const resumed = previewEl.play();
+        if (resumed && resumed.catch) resumed.catch(() => pausePreview());
+      } catch(e){ pausePreview(); }
+    } else {
+      startWA(clip.start);
+    }
+  }
+
+  function startPlaybackTicker(){
+    cancelAnimationFrame(rafId);
+    const tick = () => {
+      if (!playMode) return;
+      const t = currentPos();
+      if (playMode === 'el' && t >= selEnd - 0.004){
+        posCursor = selEnd;
+        updatePlayheadUI(posCursor);
+        advancePlaybackSegment();
+      } else {
+        posCursor = clamp(t, selStart, selEnd);
+        updatePlayheadUI(posCursor);
+      }
+      if (playMode) rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
   }
 
   async function startPlayback(){
-    if (!duration) return;
-    if (!(selEnd > selStart)){ toast('Ajusta primero el inicio y el fin del recorte.'); return; }
+    if (!duration || !clips.length) return;
+    if (playbackReachedEnd && loopMode !== 'clip') selectPlaybackClip(0, clips[0].start);
+    if (!(selEnd > selStart)){ toast('Ajusta el recorte.'); return; }
+    playbackReachedEnd = false;
+    if (loopMode === 'clip') playbackLoopClip = activeClip;
     let from = posCursor;
     if (!(from >= selStart && from < selEnd - 0.05)) from = selStart;
 
@@ -1611,18 +1734,10 @@
     posCursor = from;
     $('icoPlay').style.display = 'none';
     $('icoPause').style.display = '';
+    $('playBtn').setAttribute('aria-label','Pausar');
     showCursorUI();
     updatePlayheadUI(from);
-
-    const tick = () => {
-      if (!playMode) return;
-      const t = currentPos();
-      posCursor = t;
-      updatePlayheadUI(t);
-      if (t >= selEnd - 0.02){ finishPlayback(); return; }
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
+    startPlaybackTicker();
   }
 
   // Mover el cursor para adelantar o atrasar (sonando o en pausa)
@@ -1632,6 +1747,7 @@
     if (!located) return;
     const index = located.index, clip = located.clip;
     const t = clamp(located.sourceTime, clip.start, Math.max(clip.start, clip.end - 0.02));
+    playbackReachedEnd = false;
     if (index !== activeClip){
       activeClip = index;
       selStart = clip.start;
@@ -1639,6 +1755,7 @@
       syncAll('clip');
       refreshEditButtons();
     }
+    if (loopMode === 'clip') playbackLoopClip = index;
     posCursor = t;
     if (playMode === 'el'){
       try { previewEl.currentTime = t; } catch(e){}
@@ -1879,6 +1996,7 @@
     if(!snap||!snap.clips||!snap.clips.length)return;
     pausePreview();
     clips=snap.clips.map(clip=>({...clip}));
+    playbackReachedEnd=false;
     activeClip=clamp(snap.activeClip,0,clips.length-1);
     const clip=currentClip();
     selStart=clip.start;selEnd=clip.end;
@@ -1897,23 +2015,24 @@
     if(!duration)return;
     if(playMode)pausePreview();
     const index=clipIndexAtTime(posCursor);
-    if(index<0){toast('Coloca el cursor vertical dentro de un fragmento.');return;}
+    if(index<0){toast('Selecciona un fragmento.');return;}
     if(index!==activeClip)activateClip(index,posCursor);
     const clip=currentClip();
     const t=clamp(posCursor,clip.start,clip.end);
     if(t<=clip.start+MIN_GAP||t>=clip.end-MIN_GAP){
-      toast('Coloca el cursor vertical dentro del fragmento, no sobre sus extremos.');return;
+      toast('Aleja el cursor de los extremos.');return;
     }
     pushEditorHistory();
+    playbackReachedEnd=false;
     const left=newClip(clip.start,t),right=newClip(t,clip.end);
     clips.splice(activeClip,1,left,right);
     activeClip+=1;
     selStart=right.start;selEnd=right.end;posCursor=t;
     syncAll('scissors');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
-    toast('Corte creado en '+fmtTime(t,true)+'. Ahora tienes '+clips.length+(clips.length===1?' fragmento.':' fragmentos.'));
+    toast('Corte creado.');
   });
   editDelete.addEventListener('click',()=>{
-    if(!duration||clips.length<=1){toast('El audio debe conservar al menos un fragmento.');return;}
+    if(!duration||clips.length<=1){toast('Debe quedar un fragmento.');return;}
     if(playMode)pausePreview();
     pushEditorHistory();
     const removed=activeClip;
@@ -1922,7 +2041,7 @@
     const clip=currentClip();
     selStart=clip.start;selEnd=clip.end;posCursor=clip.start;
     resetView();syncAll('delete');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
-    toast('Fragmento eliminado. Los demás se unieron con efecto imán.');
+    toast('Fragmento eliminado.');
   });
   refreshEditButtons();
 
