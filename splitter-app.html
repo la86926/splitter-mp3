@@ -1338,10 +1338,11 @@
   let pointerPinchAnchor=0;
   let singleTouchStart=null;
   let touchGestureSnapshot=null;
+  let touchGestureAllowsPinch=true;
 
   function touchReservedForPinch(e){
     return e.pointerType==='touch'&&(
-      pointerPinchActive||pinchConsumedPointers.has(e.pointerId)||waveTouchPointers.size>1
+      pointerPinchActive||pinchConsumedPointers.has(e.pointerId)||(waveTouchPointers.size>1&&touchGestureAllowsPinch)
     );
   }
 
@@ -1478,9 +1479,10 @@
     canvas.addEventListener('pointercancel',up);
   });
 
-  /* La rueda amplía aunque el puntero esté sobre la selección, un asa o el cursor. */
+  /* La rueda amplía sobre las ondas y la selección; las asas sólo recortan. */
   waveBox.addEventListener('wheel',e=>{
     if(!duration)return;
+    if(e.target.closest('.handle')){e.preventDefault();return;}
     e.preventDefault();
     e.stopImmediatePropagation();
     zoomWaveAt(e.clientX,Math.exp(e.deltaY*.0024));
@@ -1501,13 +1503,21 @@
   waveBox.addEventListener('pointerdown',e=>{
     if(!duration||e.pointerType!=='touch')return;
     pinchConsumedPointers.delete(e.pointerId);
-    waveTouchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    const trimHandle=!!e.target.closest('.handle');
+    waveTouchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY,trimHandle});
     if(waveTouchPointers.size===1){
+      touchGestureAllowsPinch=!trimHandle;
       touchGestureSnapshot=touchEditorSnapshot();
       singleTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false,blocked:!!e.target.closest('.handle,.playhead')};
     }
     if(waveTouchPointers.size===2){
       e.preventDefault();
+      const canPinch=touchGestureAllowsPinch&&pointerPair().every(pointer=>!pointer.trimHandle);
+      if(!canPinch){
+        touchGestureAllowsPinch=false;
+        pinchConsumedPointers.add(e.pointerId);
+        return;
+      }
       waveTouchPointers.forEach((_,id)=>pinchConsumedPointers.add(id));
       if(playMode)pausePreview();
       restoreTouchEditorSnapshot(touchGestureSnapshot);
@@ -1564,6 +1574,7 @@
     }else if(waveTouchPointers.size===0){
       singleTouchStart=null;
       touchGestureSnapshot=null;
+      touchGestureAllowsPinch=true;
     }
     if(wasConsumed)setTimeout(()=>pinchConsumedPointers.delete(e.pointerId),0);
   }
