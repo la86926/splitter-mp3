@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>Splitter MP3</title>
-<style>html,body{margin:0;min-height:100%;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}#loader{min-height:100vh;display:grid;place-items:center;color:#6e6e73;font-size:14px}</style>
+<style>
+  html,body{margin:0;min-height:100%;background:#faf9fe;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  #loader{min-height:100vh;display:grid;place-items:center;color:#77767b;font-size:13px;letter-spacing:.01em}
+  @media(prefers-color-scheme:dark){html,body{background:#0b0b0d}#loader{color:#98989f}}
+</style>
 </head>
 <body>
 <div id="loader">Abriendo Splitter MP3…</div>
@@ -13,7 +17,8 @@
 (async()=>{
   const response=await fetch('./splitter-app.html?v=20260731-notices28',{cache:'no-store'});
   if(!response.ok)throw new Error('No se pudo cargar Splitter MP3.');
-  const source=await response.text();
+  let source=await response.text();
+  source=source.replace('</head>','<link rel="stylesheet" href="./aux-minimal.css?v=20260731-aux1"></head>');
   document.open();document.write(source);document.close();
 })().catch(error=>{console.error(error);document.getElementById('loader').textContent='No se pudo abrir Splitter MP3. Recarga la página.'});
 </script>
