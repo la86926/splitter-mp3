@@ -105,6 +105,29 @@ async function exportAndVerify(page, outPath, expectedDuration, expectedExt) {
   await page.waitForFunction(() => document.querySelector('#statCut')?.textContent.includes('Listo:'), { timeout: 15000 });
 }
 
+async function joinAndVerify(page, outPath, expectedDuration) {
+  await page.locator('[data-tab="join"]').click();
+  await page.setInputFiles('#fileJoin', [sampleWav, sampleWav2]);
+  await page.waitForFunction(() => {
+    const button = document.querySelector('#btnJoin');
+    return button && !button.disabled;
+  });
+  const downloadPromise = page.waitForEvent('download', { timeout: 120000 }).then(download => ({ download }));
+  const errorPromise = page.waitForFunction(
+    () => document.querySelector('#statJoin')?.textContent.startsWith('No se pudo unir:'),
+    { timeout: 120000 },
+  ).then(async () => ({ error: await page.locator('#statJoin').textContent() }));
+  await page.locator('#btnJoin').click();
+  const outcome = await Promise.race([downloadPromise, errorPromise]);
+  if (outcome.error) throw new Error(outcome.error);
+  await outcome.download.saveAs(outPath);
+  assert(!await outcome.download.failure(), 'La descarga del audio unido falló.');
+  assert(fs.statSync(outPath).size > 1000, 'El audio unido está vacío.');
+  const duration = ffprobeDuration(outPath);
+  assert(Math.abs(duration - expectedDuration) < 0.35, 'Duración unida incorrecta: ' + duration);
+  await page.waitForFunction(() => document.querySelector('#statJoin')?.textContent.includes('Listo:'), { timeout: 15000 });
+}
+
 async function basicSmoke(page, errors) {
   await waitLoaded(page, sampleWav, 6);
   let s = await state(page);
@@ -267,6 +290,9 @@ async function fullChromium(page, context, errors) {
   const beforeFinalArrow = (await state(page)).cursorProject;
   await page.keyboard.press('ArrowRight');
   assert((await state(page)).cursorProject !== beforeFinalArrow, 'El editor quedó bloqueado después de exportar MP3.');
+
+  // La función existente de unir también debe seguir operativa tras endurecer la capa FFmpeg.
+  await joinAndVerify(page, path.join(ROOT, 'joined.wav'), 9);
 
   assert(errors.length === 0, 'Errores de página: ' + errors.join(' | '));
 }
