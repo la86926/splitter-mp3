@@ -1,4 +1,4 @@
-name: Splitter MP3 UI test
+name: Splitter MP3 editor verification
 
 on:
   push:
@@ -6,17 +6,43 @@ on:
     paths:
       - index.html
       - splitter-app.html
+      - tests/verify_splitter_editor.js
+      - .github/workflows/splitter-ui-test.yml
+  pull_request:
+    paths:
+      - index.html
+      - splitter-app.html
+      - tests/verify_splitter_editor.js
       - .github/workflows/splitter-ui-test.yml
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-env:
-  TEST_REVISION: 5
+  contents: read
 
 jobs:
-  browser-test:
+  chromium-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install browser test dependencies
+        run: |
+          npm init -y
+          npm install --save-dev playwright
+          npx playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run full Chromium editor verification
+        run: |
+          python3 -m http.server 4173 >/tmp/splitter-server.log 2>&1 &
+          BROWSER=chromium node tests/verify_splitter_editor.js
+
+  webkit-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -25,105 +51,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Chromium
+      - name: Install WebKit smoke-test dependencies
         run: |
           npm init -y
           npm install --save-dev playwright
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps webkit
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
-      - name: Generate WAV sample
-        run: |
-          cat > make-wav.js <<'NODE'
-          const fs=require('fs');
-          const sampleRate=44100,duration=5,channels=1,bits=16;
-          const frames=sampleRate*duration;
-          const dataSize=frames*channels*(bits/8);
-          const b=Buffer.alloc(44+dataSize);
-          b.write('RIFF',0);b.writeUInt32LE(36+dataSize,4);b.write('WAVE',8);
-          b.write('fmt ',12);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);
-          b.writeUInt16LE(channels,22);b.writeUInt32LE(sampleRate,24);
-          b.writeUInt32LE(sampleRate*channels*(bits/8),28);
-          b.writeUInt16LE(channels*(bits/8),32);b.writeUInt16LE(bits,34);
-          b.write('data',36);b.writeUInt32LE(dataSize,40);
-          for(let i=0;i<frames;i++){
-            const v=Math.round(Math.sin(2*Math.PI*440*i/sampleRate)*12000);
-            b.writeInt16LE(v,44+i*2);
-          }
-          fs.writeFileSync('sample.wav',b);
-          NODE
-          node make-wav.js
-
-      - name: Test zoom and scissors
+      - name: Run WebKit smoke verification
         run: |
           python3 -m http.server 4173 >/tmp/splitter-server.log 2>&1 &
-          cat > test.js <<'NODE'
-          const { chromium }=require('playwright');
-          (async()=>{
-            const browser=await chromium.launch({headless:true});
-            const context=await browser.newContext({viewport:{width:1100,height:900},hasTouch:true});
-            const page=await context.newPage();
-            const pageErrors=[];
-            page.on('pageerror',e=>pageErrors.push(String(e)));
-            page.on('console',m=>console.log('BROWSER:',m.type(),m.text()));
-            await page.goto('http://127.0.0.1:4173/?test=native11-final',{waitUntil:'networkidle'});
-            await page.waitForSelector('#fileCut',{state:'attached',timeout:30000});
-            await page.setInputFiles('#fileCut','sample.wav');
-            await page.waitForSelector('#editor:not([hidden])',{timeout:30000});
-            await page.waitForFunction(()=>document.querySelector('#roEnd')?.textContent!=='0:00.0');
-
-            const viewport=await page.locator('meta[name="viewport"]').getAttribute('content');
-            if(!viewport.includes('user-scalable=no')||!viewport.includes('maximum-scale=1'))throw new Error('La página aún permite zoom global');
-            if(await page.locator('footer').count())throw new Error('El texto del pie todavía existe');
-            if(await page.locator('#editCut').count()!==1)throw new Error('No aparece el botón de tijeras');
-
-            const frame=page.locator('#selFrame');
-            const box=await frame.boundingBox();
-            if(!box)throw new Error('No se encontró la selección de onda');
-            const cursorX=box.x+box.width*.35;
-            const cursorY=box.y+box.height*.5;
-            await page.mouse.click(cursorX,cursorY);
-            const beforeStart=await page.locator('#roStart').textContent();
-            const beforeEnd=await page.locator('#roEnd').textContent();
-            await page.locator('#editCut').click();
-            const afterStart=await page.locator('#roStart').textContent();
-            const afterEnd=await page.locator('#roEnd').textContent();
-            if(afterStart===beforeStart&&afterEnd===beforeEnd)throw new Error('Las tijeras no cambiaron la selección');
-
-            const rulerBefore=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            const selected=await page.locator('#selFrame').boundingBox();
-            await page.mouse.move(selected.x+selected.width*.5,selected.y+selected.height*.5);
-            await page.mouse.wheel(0,-650);
-            await page.waitForTimeout(500);
-            const rulerAfterWheel=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            if(rulerAfterWheel===rulerBefore)throw new Error('La rueda no hizo zoom sobre la zona seleccionada');
-
-            const selectedAfterWheel=await page.locator('#selFrame').boundingBox();
-            const client=await context.newCDPSession(page);
-            const y=selectedAfterWheel.y+selectedAfterWheel.height*.5;
-            const x1=selectedAfterWheel.x+selectedAfterWheel.width*.42;
-            const x2=selectedAfterWheel.x+selectedAfterWheel.width*.58;
-            await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x1,y},{x:x2,y}]});
-            await client.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x1-70,y},{x:x2+70,y}]});
-            await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
-            await page.waitForTimeout(500);
-            const rulerAfterPinch=await page.locator('#rulerStart').textContent()+'|'+await page.locator('#rulerEnd').textContent();
-            if(rulerAfterPinch===rulerAfterWheel)throw new Error('El pellizco no hizo zoom sobre la selección');
-
-            if(pageErrors.length)throw new Error('Errores de página: '+pageErrors.join(' | '));
-            console.log(JSON.stringify({beforeStart,beforeEnd,afterStart,afterEnd,rulerBefore,rulerAfterWheel,rulerAfterPinch}));
-            await browser.close();
-          })().catch(e=>{console.error(e);process.exit(1)});
-          NODE
-          node test.js
-
-      - name: Save test result
-        if: always()
-        env:
-          TEST_STATUS: ${{ job.status }}
-        run: |
-          printf '{"status":"%s","commit":"%s","run_id":"%s","revision":"%s"}\n' "$TEST_STATUS" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$TEST_REVISION" > splitter-test-status.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add splitter-test-status.json
-          git commit -m "Registrar prueba de Splitter MP3 [skip ci]" || exit 0
-          git push
+          BROWSER=webkit SMOKE=1 node tests/verify_splitter_editor.js
