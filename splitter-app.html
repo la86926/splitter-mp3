@@ -1417,20 +1417,29 @@
 
   /* SPLITTER_NATIVE_INTERACTION_V3 */
   /* ---- Interacción precisa sobre toda la onda, incluida la selección ---- */
-  document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
-  document.addEventListener('gesturechange',e=>e.preventDefault(),{passive:false});
-  document.addEventListener('gestureend',e=>e.preventDefault(),{passive:false});
-  document.addEventListener('dblclick',e=>e.preventDefault(),{capture:true});
-  window.addEventListener('wheel',e=>{
-    if((e.ctrlKey||e.metaKey)&&!waveBox.contains(e.target))e.preventDefault();
-  },{passive:false,capture:true});
-
-  let lastTouchEnd=0;
-  document.addEventListener('touchend',e=>{
-    const now=Date.now();
-    if(now-lastTouchEnd<320)e.preventDefault();
-    lastTouchEnd=now;
-  },{passive:false,capture:true});
+  /* Safari expone gesture* además de Pointer Events. Se limita todo a la onda:
+     el editor no debe bloquear gestos ni atajos del resto de la página/navegador. */
+  let safariGestureSpan0=0, safariGestureAnchor=0, safariGestureRatio=.5;
+  waveBox.addEventListener('gesturestart',e=>{
+    if(!duration)return;
+    if(e.cancelable)e.preventDefault();
+    const rect=waveBox.getBoundingClientRect();
+    safariGestureRatio=clamp(((Number.isFinite(e.clientX)?e.clientX:rect.left+rect.width/2)-rect.left)/Math.max(1,rect.width),0,1);
+    safariGestureSpan0=viewSpan();
+    safariGestureAnchor=viewA+safariGestureRatio*safariGestureSpan0;
+  },{passive:false});
+  waveBox.addEventListener('gesturechange',e=>{
+    if(!duration||!safariGestureSpan0)return;
+    if(e.cancelable)e.preventDefault();
+    const scale=Math.max(.05,Number(e.scale)||1);
+    const span=clamp(safariGestureSpan0/scale,preciseMinSpan(),keptDuration());
+    setPreciseView(safariGestureAnchor-safariGestureRatio*span,span);
+  },{passive:false});
+  waveBox.addEventListener('gestureend',e=>{
+    if(e.cancelable)e.preventDefault();
+    safariGestureSpan0=0;
+  },{passive:false});
+  waveBox.addEventListener('dblclick',e=>{if(e.cancelable)e.preventDefault();},{capture:true});
 
   const MIN_PRECISE_SPAN=.3;
   function preciseMinSpan(){const total=keptDuration();return total?Math.min(MIN_PRECISE_SPAN,total):MIN_PRECISE_SPAN}
@@ -1510,7 +1519,7 @@
       singleTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false,blocked:!!e.target.closest('.handle,.playhead')};
     }
     if(waveTouchPointers.size===2){
-      e.preventDefault();
+      if(e.cancelable)e.preventDefault();
       const canPinch=touchGestureAllowsPinch&&pointerPair().every(pointer=>!pointer.trimHandle);
       if(!canPinch){
         touchGestureAllowsPinch=false;
@@ -1526,7 +1535,7 @@
       pointerPinchSpan0=viewSpan();
       pointerPinchAnchor=timeAtClientX(pointerPairMidX());
     }else if(waveTouchPointers.size>2){
-      e.preventDefault();
+      if(e.cancelable)e.preventDefault();
       pinchConsumedPointers.add(e.pointerId);
     }
   },true);
@@ -1539,15 +1548,15 @@
     if(singleTouchStart&&singleTouchStart.id===e.pointerId){
       if(Math.hypot(e.clientX-singleTouchStart.x,e.clientY-singleTouchStart.y)>5){
         singleTouchStart.moved=true;
-        if(!singleTouchStart.blocked&&!touchReservedForPinch(e)){e.preventDefault();seekTo(timeAtClientX(e.clientX));}
+        if(!singleTouchStart.blocked&&!touchReservedForPinch(e)){if(e.cancelable)e.preventDefault();seekTo(timeAtClientX(e.clientX));}
       }
     }
     if(!pointerPinchActive||waveTouchPointers.size<2){
-      if(pinchConsumedPointers.has(e.pointerId))e.preventDefault();
+      if(pinchConsumedPointers.has(e.pointerId)&&e.cancelable)e.preventDefault();
       return;
     }
     waveBox.dataset.pinchMoves=String((Number(waveBox.dataset.pinchMoves)||0)+1);
-    e.preventDefault();
+    if(e.cancelable)e.preventDefault();
     const distance=Math.max(1,pointerPairDistance());
     const midpoint=pointerPairMidX();
     const rect=waveBox.getBoundingClientRect();
@@ -1561,7 +1570,7 @@
     const wasPinching=pointerPinchActive;
     const wasConsumed=pinchConsumedPointers.has(e.pointerId);
     const wasSingle=waveTouchPointers.size===1;
-    if(wasPinching||wasConsumed)e.preventDefault();
+    if((wasPinching||wasConsumed)&&e.cancelable)e.preventDefault();
     waveTouchPointers.delete(e.pointerId);
     if(!wasConsumed&&wasSingle&&singleTouchStart&&singleTouchStart.id===e.pointerId&&!singleTouchStart.moved&&e.type==='pointerup'){
       seekTo(timeAtClientX(e.clientX));
