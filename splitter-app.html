@@ -751,6 +751,91 @@
                   ogg:'audio/ogg', oga:'audio/ogg', opus:'audio/ogg', flac:'audio/flac',
                   aiff:'audio/aiff', aif:'audio/aiff', wma:'audio/x-ms-wma' };
 
+  function writeAscii(view, offset, text){
+    for (let i=0;i<text.length;i++) view.setUint8(offset+i,text.charCodeAt(i));
+  }
+  function buildEditedWav(buffer, plan){
+    if (!buffer || !plan.length) throw new Error('No hay audio decodificado para exportar.');
+    const rate=buffer.sampleRate;
+    const channels=Math.max(1,buffer.numberOfChannels);
+    const ranges=plan.map(clip=>{
+      const start=clamp(Math.round(clip.start*rate),0,buffer.length);
+      const end=clamp(Math.round(clip.end*rate),start,buffer.length);
+      return {start,end,frames:end-start};
+    }).filter(r=>r.frames>0);
+    const frames=ranges.reduce((sum,r)=>sum+r.frames,0);
+    if (!frames) throw new Error('La edición no contiene muestras de audio.');
+    const bytesPerSample=2, blockAlign=channels*bytesPerSample;
+    const dataSize=frames*blockAlign;
+    if (dataSize>0xffffffff-44) throw new Error('El audio editado es demasiado grande para el WAV intermedio.');
+    const out=new ArrayBuffer(44+dataSize);
+    const view=new DataView(out);
+    writeAscii(view,0,'RIFF'); view.setUint32(4,36+dataSize,true); writeAscii(view,8,'WAVE');
+    writeAscii(view,12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true);
+    view.setUint16(22,channels,true); view.setUint32(24,rate,true);
+    view.setUint32(28,rate*blockAlign,true); view.setUint16(32,blockAlign,true); view.setUint16(34,16,true);
+    writeAscii(view,36,'data'); view.setUint32(40,dataSize,true);
+    const channelData=Array.from({length:channels},(_,ch)=>buffer.getChannelData(ch));
+    let offset=44;
+    for (const range of ranges){
+      for (let frame=range.start;frame<range.end;frame++){
+        for (let ch=0;ch<channels;ch++){
+          const sample=clamp(channelData[ch][frame]||0,-1,1);
+          const value=sample<0?Math.round(sample*0x8000):Math.round(sample*0x7fff);
+          view.setInt16(offset,value,true); offset+=2;
+        }
+      }
+    }
+    return new Uint8Array(out);
+  }
+  async function decodeForExport(file, status){
+    if (audioBuf) return audioBuf;
+    const ff=await getFFmpeg(status);
+    ffLogTail=[];
+    const ext=extOf(file.name);
+    const input='splitter_decode_input.'+(ext||'bin');
+    const decoded='splitter_decode.wav';
+    ffCleanup([input,decoded]);
+    try{
+      status && status('Decodificando el audio para una exportación fiable…');
+      ff.FS('writeFile',input,await window.FFmpeg.fetchFile(file));
+      await ff.run('-i',input,'-vn','-c:a','pcm_s16le',decoded);
+      const bytes=ff.FS('readFile',decoded);
+      const copy=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(!audioCtx)audioCtx=new AC();
+      return await audioCtx.decodeAudioData(copy);
+    }finally{
+      ffCleanup([input,decoded]);
+    }
+  }
+  async function encodeEditedWav(wavBytes, ext, status){
+    const ff=await getFFmpeg(status);
+    ffLogTail=[];
+    const input='splitter_edited_source.wav';
+    const output='splitter_edited_output.'+ext;
+    ffCleanup([input,output]);
+    try{
+      ff.FS('writeFile',input,wavBytes);
+      const specific=encoderArgs(ext);
+      status && status('Codificando el audio editado…');
+      try{
+        await ff.run('-i',input,'-vn',...specific,output);
+      }catch(firstError){
+        if(!specific.length)throw firstError;
+        console.warn('El codificador preferido falló; se intentará el predeterminado del formato.',firstError);
+        ffCleanup([output]);
+        status && status('Probando un codificador compatible…');
+        await ff.run('-i',input,'-vn',output);
+      }
+      const data=ff.FS('readFile',output);
+      if(!data||!data.length)throw new Error('FFmpeg generó una salida vacía.');
+      return new Uint8Array(data);
+    }finally{
+      ffCleanup([input,output]);
+    }
+  }
+
   /* ============ CORTAR: estado ============ */
   let cutFile = null;        // File original
   let audioBuf = null;       // AudioBuffer decodificado (para onda y respaldo de preview)
@@ -1901,71 +1986,55 @@
   /* ---- Exportar todos los fragmentos conservados como un solo audio ---- */
   $('btnCut').addEventListener('click', async () => {
     if (!cutFile || exportBusy || ffOperationBusy) return;
-    const sourceFile = cutFile;
-    const plan = clips.filter(clip => clip.end > clip.start + 0.001).map(clip => ({...clip}));
-    if (!plan.length) return;
+    const sourceFile=cutFile;
+    const plan=clips.filter(clip=>clip.end>clip.start+0.001).map(clip=>({...clip}));
+    if(!plan.length)return;
     pausePreview();
 
-    const ext = extOf(sourceFile.name) || 'mp3';
-    const inName = 'splitter_input.' + ext, outName = 'splitter_output.' + ext;
-    const tempNames = [inName, outName];
-    const btn = $('btnCut'), prog = $('progCut'), bar = $('barCut'), stat = $('statCut');
-    exportBusy = true;
-    ffOperationBusy = true;
-    btn.disabled = true;
-    $('changeFile').disabled = true;
-    $('btnJoin').disabled = true;
-    prog.style.display = 'block'; bar.style.width = '0%';
+    const ext=extOf(sourceFile.name)||'mp3';
+    const btn=$('btnCut'),prog=$('progCut'),bar=$('barCut'),stat=$('statCut');
+    exportBusy=true;
+    ffOperationBusy=true;
+    btn.disabled=true;
+    $('changeFile').disabled=true;
+    $('btnJoin').disabled=true;
+    prog.style.display='block';
+    bar.style.width='4%';
     refreshEditButtons();
 
-    try {
-      const ff = await getFFmpeg(msg => stat.textContent = msg);
-      ffLogTail = [];
-      ff.setProgress(({ ratio }) => {
-        if (ratio >= 0 && ratio <= 1) bar.style.width = Math.round(ratio * 100) + '%';
-      });
-      ffCleanup(tempNames);
-      stat.textContent = 'Preparando ' + plan.length + (plan.length === 1 ? ' fragmento…' : ' fragmentos…');
-      ff.FS('writeFile', inName, await window.FFmpeg.fetchFile(sourceFile));
+    try{
+      stat.textContent='Preparando la edición…';
+      const decoded=await decodeForExport(sourceFile,msg=>stat.textContent=msg);
+      const wavBytes=buildEditedWav(decoded,plan);
+      bar.style.width='45%';
 
-      const filters = [];
-      const labels = [];
-      if (plan.length === 1){
-        const clip = plan[0];
-        filters.push('[0:a]atrim=start=' + clip.start.toFixed(6) + ':end=' + clip.end.toFixed(6) + ',asetpts=PTS-STARTPTS[outa]');
-      } else {
-        const splitLabels = plan.map((_, i) => '[src' + i + ']').join('');
-        filters.push('[0:a]asplit=' + plan.length + splitLabels);
-        plan.forEach((clip, i) => {
-          const label = 'a' + i;
-          filters.push('[src' + i + ']atrim=start=' + clip.start.toFixed(6) + ':end=' + clip.end.toFixed(6) + ',asetpts=PTS-STARTPTS[' + label + ']');
-          labels.push('[' + label + ']');
+      let data;
+      if(ext==='wav'){
+        data=wavBytes;
+        bar.style.width='96%';
+      }else{
+        const ff=await getFFmpeg(msg=>stat.textContent=msg);
+        ff.setProgress(({ratio})=>{
+          if(ratio>=0&&ratio<=1)bar.style.width=(45+Math.round(ratio*50))+'%';
         });
-        filters.push(labels.join('') + 'concat=n=' + plan.length + ':v=0:a=1[outa]');
+        data=await encodeEditedWav(wavBytes,ext,msg=>stat.textContent=msg);
       }
-      const filter = filters.join(';');
 
-      const args = ['-i', inName, '-filter_complex', filter, '-map', '[outa]', '-vn', ...encoderArgs(ext), outName];
-      stat.textContent = 'Generando el audio editado…';
-      await ff.run(...args);
-      const data = ff.FS('readFile', outName);
-      if (!data || !data.length) throw new Error('FFmpeg generó una salida vacía.');
-
-      downloadBytes(data, baseOf(sourceFile.name) + ' (editado).' + ext, MIMES[ext]);
-      bar.style.width = '100%';
-      stat.textContent = 'Listo: se descargó un solo audio con ' + plan.length + (plan.length === 1 ? ' fragmento' : ' fragmentos') + ' (' + fmtTime(plan.reduce((sum,c)=>sum+c.end-c.start,0), true) + ').';
-    } catch(err){
-      console.error('Error al exportar el audio editado:', err, ffLogTail);
-      stat.textContent = 'No se pudo exportar: ' + ffErrorMessage(err);
-    } finally {
-      ffCleanup(tempNames);
-      exportBusy = false;
-      ffOperationBusy = false;
-      btn.disabled = false;
-      $('changeFile').disabled = false;
+      downloadBytes(data,baseOf(sourceFile.name)+' (editado).'+ext,MIMES[ext]);
+      bar.style.width='100%';
+      const editedDuration=plan.reduce((sum,c)=>sum+c.end-c.start,0);
+      stat.textContent='Listo: se descargó un solo audio con '+plan.length+(plan.length===1?' fragmento':' fragmentos')+' ('+fmtTime(editedDuration,true)+').';
+    }catch(err){
+      console.error('Error al exportar el audio editado:',err,ffLogTail);
+      stat.textContent='No se pudo exportar: '+ffErrorMessage(err);
+    }finally{
+      exportBusy=false;
+      ffOperationBusy=false;
+      btn.disabled=false;
+      $('changeFile').disabled=false;
       renderJoin();
       refreshEditButtons();
-      setTimeout(() => { prog.style.display = 'none'; }, 1200);
+      setTimeout(()=>{prog.style.display='none';},1200);
     }
   });
 
