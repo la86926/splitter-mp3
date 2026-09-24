@@ -837,6 +837,81 @@
       ffCleanup([input,decoded]);
     }
   }
+  async function decodeStandaloneFile(file,status,index){
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!audioCtx)audioCtx=new AC();
+    try{
+      const raw=await file.arrayBuffer();
+      return await audioCtx.decodeAudioData(raw.slice(0));
+    }catch(browserError){
+      const ff=await getFFmpeg(status);
+      ffLogTail=[];
+      const ext=extOf(file.name);
+      const input='splitter_join_decode_'+index+'.'+(ext||'bin');
+      const decoded='splitter_join_decode_'+index+'.wav';
+      ffCleanup([input,decoded]);
+      try{
+        status&&status('Decodificando '+file.name+'…');
+        ff.FS('writeFile',input,await window.FFmpeg.fetchFile(file));
+        const bytes=await ffRunChecked(ff,['-i',input,'-vn','-c:a','pcm_s16le',decoded],decoded);
+        const copy=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+        return await audioCtx.decodeAudioData(copy);
+      }catch(ffError){
+        console.error('No se pudo decodificar para unir:',file.name,browserError,ffError);
+        throw ffError;
+      }finally{
+        ffCleanup([input,decoded]);
+      }
+    }
+  }
+  function interpolatedSample(buffer,channel,pos,targetChannels){
+    const count=buffer.numberOfChannels;
+    const i0=Math.min(buffer.length-1,Math.max(0,Math.floor(pos)));
+    const i1=Math.min(buffer.length-1,i0+1);
+    const frac=Math.max(0,Math.min(1,pos-i0));
+    const sampleChannel=ch=>{
+      const data=buffer.getChannelData(Math.min(ch,count-1));
+      return data[i0]+(data[i1]-data[i0])*frac;
+    };
+    if(targetChannels===1&&count>1){
+      let sum=0;
+      for(let ch=0;ch<count;ch++)sum+=sampleChannel(ch);
+      return sum/count;
+    }
+    return sampleChannel(channel);
+  }
+  function buildJoinedWav(buffers){
+    if(!buffers.length)throw new Error('No hay audios para unir.');
+    const rate=buffers[0].sampleRate;
+    const channels=Math.max(1,buffers[0].numberOfChannels);
+    const framesPerBuffer=buffers.map(buffer=>Math.max(1,Math.round(buffer.duration*rate)));
+    const frames=framesPerBuffer.reduce((a,b)=>a+b,0);
+    const blockAlign=channels*2;
+    const dataSize=frames*blockAlign;
+    if(dataSize>0xffffffff-44)throw new Error('El audio unido es demasiado grande para el WAV intermedio.');
+    const out=new ArrayBuffer(44+dataSize);
+    const view=new DataView(out);
+    writeAscii(view,0,'RIFF');view.setUint32(4,36+dataSize,true);writeAscii(view,8,'WAVE');
+    writeAscii(view,12,'fmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);
+    view.setUint16(22,channels,true);view.setUint32(24,rate,true);
+    view.setUint32(28,rate*blockAlign,true);view.setUint16(32,blockAlign,true);view.setUint16(34,16,true);
+    writeAscii(view,36,'data');view.setUint32(40,dataSize,true);
+    let offset=44;
+    buffers.forEach((buffer,index)=>{
+      const outFrames=framesPerBuffer[index];
+      const ratio=buffer.sampleRate/rate;
+      for(let frame=0;frame<outFrames;frame++){
+        const srcPos=Math.min(buffer.length-1,frame*ratio);
+        for(let ch=0;ch<channels;ch++){
+          const sample=clamp(interpolatedSample(buffer,ch,srcPos,channels),-1,1);
+          const value=sample<0?Math.round(sample*0x8000):Math.round(sample*0x7fff);
+          view.setInt16(offset,value,true);offset+=2;
+        }
+      }
+    });
+    return new Uint8Array(out);
+  }
+
   async function encodeEditedWav(wavBytes, ext, status){
     const ff=await getFFmpeg(status);
     ffLogTail=[];
@@ -2121,53 +2196,54 @@
   }
 
   $('btnJoin').addEventListener('click', async () => {
-    if (joinFiles.length < 2 || ffOperationBusy) return;
-    const files = joinFiles.slice();
-    const ext = extOf(files[0].name) || 'mp3';
-    const btn = $('btnJoin'), prog = $('progJoin'), bar = $('barJoin'), stat = $('statJoin');
-    ffOperationBusy = true;
-    btn.disabled = true;
-    $('btnCut').disabled = true;
-    $('changeFile').disabled = true;
-    prog.style.display = 'block'; bar.style.width = '0%';
-    const names = [];
-    const outName = 'splitter_joined.' + ext;
+    if(joinFiles.length<2||ffOperationBusy)return;
+    const files=joinFiles.slice();
+    const ext=extOf(files[0].name)||'mp3';
+    const btn=$('btnJoin'),prog=$('progJoin'),bar=$('barJoin'),stat=$('statJoin');
+    ffOperationBusy=true;
+    btn.disabled=true;
+    $('btnCut').disabled=true;
+    $('changeFile').disabled=true;
+    prog.style.display='block';
+    bar.style.width='3%';
+    renderJoin();
 
-    try {
-      const ff = await getFFmpeg(msg => stat.textContent = msg);
-      ffLogTail = [];
-      ff.setProgress(({ ratio }) => {
-        if (ratio >= 0 && ratio <= 1) bar.style.width = Math.round(ratio * 100) + '%';
-      });
-      stat.textContent = 'Uniendo ' + files.length + ' archivos…';
-
-      const args = [];
-      for (let i = 0; i < files.length; i++){
-        const n = 'splitter_join_' + i + '.' + ext;
-        ffCleanup([n]);
-        ff.FS('writeFile', n, await window.FFmpeg.fetchFile(files[i]));
-        names.push(n);
-        args.push('-i', n);
+    try{
+      const buffers=[];
+      for(let index=0;index<files.length;index++){
+        stat.textContent='Preparando '+(index+1)+' de '+files.length+': '+files[index].name;
+        buffers.push(await decodeStandaloneFile(files[index],msg=>stat.textContent=msg,index));
+        bar.style.width=(5+Math.round(((index+1)/files.length)*35))+'%';
       }
-      ffCleanup([outName]);
-      const labels = files.map((_,i) => '[' + i + ':a]').join('');
-      args.push('-filter_complex', labels + 'concat=n=' + files.length + ':v=0:a=1[outa]', '-map', '[outa]', '-vn', ...encoderArgs(ext), outName);
-      const data = await ffRunChecked(ff,args,outName);
-      const base = baseOf(files[0].name);
-      downloadBytes(data, base + ' (unido).' + ext, MIMES[ext]);
-      bar.style.width = '100%';
-      stat.textContent = 'Listo: se descargó el archivo unido.';
-    } catch(err){
-      console.error('Error al unir audios:', err, ffLogTail);
-      stat.textContent = 'No se pudo unir: ' + ffErrorMessage(err);
-    } finally {
-      ffCleanup([...names, outName]);
-      ffOperationBusy = false;
-      $('btnCut').disabled = false;
-      $('changeFile').disabled = false;
+      stat.textContent='Construyendo el audio unido…';
+      const wavBytes=buildJoinedWav(buffers);
+      bar.style.width='50%';
+
+      let data;
+      if(ext==='wav'){
+        data=wavBytes;
+        bar.style.width='96%';
+      }else{
+        const ff=await getFFmpeg(msg=>stat.textContent=msg);
+        ff.setProgress(({ratio})=>{
+          if(ratio>=0&&ratio<=1)bar.style.width=(50+Math.round(ratio*45))+'%';
+        });
+        data=await encodeEditedWav(wavBytes,ext,msg=>stat.textContent=msg);
+      }
+
+      downloadBytes(data,baseOf(files[0].name)+' (unido).'+ext,MIMES[ext]);
+      bar.style.width='100%';
+      stat.textContent='Listo: se descargó el archivo unido.';
+    }catch(err){
+      console.error('Error al unir audios:',err,ffLogTail);
+      stat.textContent='No se pudo unir: '+ffErrorMessage(err);
+    }finally{
+      ffOperationBusy=false;
+      $('btnCut').disabled=false;
+      $('changeFile').disabled=false;
       renderJoin();
       refreshEditButtons();
-      setTimeout(() => { prog.style.display = 'none'; }, 1200);
+      setTimeout(()=>{prog.style.display='none';},1200);
     }
   });
 
