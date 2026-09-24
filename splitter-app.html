@@ -700,7 +700,7 @@
             if (!message) return;
             ffLogTail.push(String(message));
             if (ffLogTail.length > 30) ffLogTail.shift();
-            if (type === 'fferr') console.warn('[FFmpeg]', message);
+            // stderr de FFmpeg también contiene progreso normal; se conserva en ffLogTail y sólo se muestra si la operación falla.
           });
           ffmpeg = inst;
           return ffmpeg;
@@ -713,10 +713,39 @@
   }
   function ffCleanup(names){
     if (!ffmpeg) return;
+    let entries=null;
+    try { entries=ffmpeg.FS('readdir','/'); }
+    catch(e){ console.debug('No se pudo inspeccionar el sistema temporal de FFmpeg.',e); }
     names.forEach(n => {
+      if(entries && !entries.includes(n))return;
       try { ffmpeg.FS('unlink', n); }
-      catch(e){ if (e && !/No such file/i.test(String(e.message || e))) console.debug('[FFmpeg cleanup]', n, e); }
+      catch(e){ console.debug('[FFmpeg cleanup]', n, e); }
     });
+  }
+  function ffReadOutput(ff,name){
+    try{
+      const data=ff.FS('readFile',name);
+      return data&&data.length?new Uint8Array(data):null;
+    }catch(e){
+      return null;
+    }
+  }
+  async function ffRunChecked(ff,args,expectedOutput){
+    try{
+      await ff.run(...args);
+    }catch(err){
+      const data=expectedOutput?ffReadOutput(ff,expectedOutput):null;
+      const message=err&&err.message?err.message:String(err||'');
+      if(data&&/exit\s*\(0\)|terminated with exit\s*\(0\)/i.test(message)){
+        console.debug('ffmpeg.wasm informó exit(0) como excepción; la salida válida se conserva.');
+        return data;
+      }
+      throw err;
+    }
+    if(!expectedOutput)return null;
+    const data=ffReadOutput(ff,expectedOutput);
+    if(!data)throw new Error('FFmpeg terminó sin generar el archivo esperado: '+expectedOutput);
+    return data;
   }
   function ffErrorMessage(err){
     const detail = ffLogTail.slice(-6).join(' | ');
@@ -799,8 +828,7 @@
     try{
       status && status('Decodificando el audio para una exportación fiable…');
       ff.FS('writeFile',input,await window.FFmpeg.fetchFile(file));
-      await ff.run('-i',input,'-vn','-c:a','pcm_s16le',decoded);
-      const bytes=ff.FS('readFile',decoded);
+      const bytes=await ffRunChecked(ff,['-i',input,'-vn','-c:a','pcm_s16le',decoded],decoded);
       const copy=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
       const AC=window.AudioContext||window.webkitAudioContext;
       if(!audioCtx)audioCtx=new AC();
@@ -820,17 +848,14 @@
       const specific=encoderArgs(ext);
       status && status('Codificando el audio editado…');
       try{
-        await ff.run('-i',input,'-vn',...specific,output);
+        return await ffRunChecked(ff,['-i',input,'-vn',...specific,output],output);
       }catch(firstError){
         if(!specific.length)throw firstError;
         console.warn('El codificador preferido falló; se intentará el predeterminado del formato.',firstError);
         ffCleanup([output]);
         status && status('Probando un codificador compatible…');
-        await ff.run('-i',input,'-vn',output);
+        return await ffRunChecked(ff,['-i',input,'-vn',output],output);
       }
-      const data=ff.FS('readFile',output);
-      if(!data||!data.length)throw new Error('FFmpeg generó una salida vacía.');
-      return new Uint8Array(data);
     }finally{
       ffCleanup([input,output]);
     }
@@ -2124,9 +2149,7 @@
       ffCleanup([outName]);
       const labels = files.map((_,i) => '[' + i + ':a]').join('');
       args.push('-filter_complex', labels + 'concat=n=' + files.length + ':v=0:a=1[outa]', '-map', '[outa]', '-vn', ...encoderArgs(ext), outName);
-      await ff.run(...args);
-      const data = ff.FS('readFile', outName);
-      if (!data || !data.length) throw new Error('FFmpeg generó una salida vacía.');
+      const data = await ffRunChecked(ff,args,outName);
       const base = baseOf(files[0].name);
       downloadBytes(data, base + ' (unido).' + ext, MIMES[ext]);
       bar.style.width = '100%';
