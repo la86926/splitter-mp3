@@ -1602,6 +1602,7 @@
   function updatePlayheadUI(t){
     const w = waveBox.clientWidth;
     const projectTime = sourceToProject(activeClip, t);
+    waveBox.dataset.cursorProject = projectTime.toFixed(6);
     const x = clamp(((projectTime - viewA) / viewSpan()) * w, 0, w);
     $('playhead').style.left = x + 'px';
     const tag = $('tagP');
