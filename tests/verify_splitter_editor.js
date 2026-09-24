@@ -84,9 +84,15 @@ async function wheelZoom(page, ratio, deltaY) {
 }
 
 async function exportAndVerify(page, outPath, expectedDuration, expectedExt) {
-  const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
+  const downloadPromise = page.waitForEvent('download', { timeout: 120000 }).then(download => ({ download }));
+  const errorPromise = page.waitForFunction(
+    () => document.querySelector('#statCut')?.textContent.startsWith('No se pudo exportar:'),
+    { timeout: 120000 },
+  ).then(async () => ({ error: await page.locator('#statCut').textContent() }));
   await page.locator('#btnCut').click();
-  const download = await downloadPromise;
+  const outcome = await Promise.race([downloadPromise, errorPromise]);
+  if (outcome.error) throw new Error(outcome.error);
+  const download = outcome.download;
   const suggested = download.suggestedFilename();
   assert(suggested.toLowerCase().endsWith('.' + expectedExt), 'Extensión exportada incoherente: ' + suggested);
   await download.saveAs(outPath);
@@ -272,11 +278,10 @@ async function main() {
   const errors = [];
   page.on('pageerror', error => errors.push('pageerror: ' + String(error)));
   page.on('console', message => {
-    if (message.type() === 'error') {
-      const value = 'console: ' + message.text();
-      errors.push(value);
-      console.error('BROWSER ERROR:', message.text());
-    }
+    const type = message.type();
+    const value = message.text();
+    console.log('BROWSER ' + type.toUpperCase() + ':', value);
+    if (type === 'error') errors.push('console: ' + value);
   });
   await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle', timeout: 30000 });
 
