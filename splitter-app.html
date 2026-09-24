@@ -182,7 +182,7 @@
   .sel-frame:active{ cursor:grabbing; }
   .handle{
     position:absolute; top:-3px; bottom:-3px; width:22px;
-    background:transparent;
+    background:transparent; z-index:8;
     touch-action:none; cursor:ew-resize; border:0; user-select:none;
   }
   .handle::before{
@@ -1961,37 +1961,40 @@
     const el=$(id);
     el.addEventListener('pointerdown', e => {
       if (!duration || exportBusy || !clips.length || touchReservedForPinch(e)) return;
-      e.preventDefault(); e.stopPropagation();
+      e.preventDefault();
+      const pointerId=e.pointerId;
       const startClip={...currentClip()};
       const snapshot=editorSnapshot();
       const startX=e.clientX;
       const width=Math.max(1,waveBox.getBoundingClientRect().width);
       const span=viewSpan();
       let changed=false;
-      try{el.setPointerCapture(e.pointerId)}catch(err){console.debug('No se pudo capturar el puntero.',err)}
+      try{el.setPointerCapture(pointerId)}catch(err){console.debug('No se pudo capturar el puntero del asa; se usará seguimiento global.',err)}
       const move=ev=>{
-        if (touchReservedForPinch(ev)) return;
+        if(ev.pointerId!==pointerId||touchReservedForPinch(ev))return;
+        if(ev.cancelable)ev.preventDefault();
         const delta=(ev.clientX-startX)/width*span;
         const limits=clipLimits();
         let a=startClip.start,b=startClip.end;
-        if(side==='left') a=clamp(startClip.start+delta,limits.min,startClip.end-MIN_GAP);
+        if(side==='left')a=clamp(startClip.start+delta,limits.min,startClip.end-MIN_GAP);
         else b=clamp(startClip.end+delta,startClip.start+MIN_GAP,limits.max);
         if(Math.abs(a-currentClip().start)<.0005&&Math.abs(b-currentClip().end)<.0005)return;
         if(!changed){pushEditorHistory(snapshot);changed=true;}
         setSelection(a,b,side);
-        if(snapshot.viewB-snapshot.viewA<keptDuration()-.001) setPreciseView(snapshot.viewA,snapshot.viewB-snapshot.viewA);
+        if(snapshot.viewB-snapshot.viewA<keptDuration()-.001)setPreciseView(snapshot.viewA,snapshot.viewB-snapshot.viewA);
         showCursorUI();updatePlayheadUI(posCursor);
       };
       const up=ev=>{
-        try{el.releasePointerCapture(e.pointerId)}catch(err){console.debug('No se pudo liberar el puntero.',err)}
-        el.removeEventListener('pointermove',move);
-        el.removeEventListener('pointerup',up);
-        el.removeEventListener('pointercancel',up);
+        if(ev.pointerId!==pointerId)return;
+        try{el.releasePointerCapture(pointerId)}catch(err){console.debug('No se pudo liberar el puntero del asa.',err)}
+        document.removeEventListener('pointermove',move,true);
+        document.removeEventListener('pointerup',up,true);
+        document.removeEventListener('pointercancel',up,true);
         refreshEditButtons();
       };
-      el.addEventListener('pointermove',move);
-      el.addEventListener('pointerup',up);
-      el.addEventListener('pointercancel',up);
+      document.addEventListener('pointermove',move,{capture:true,passive:false});
+      document.addEventListener('pointerup',up,true);
+      document.addEventListener('pointercancel',up,true);
     });
     el.addEventListener('keydown', e => {
       if(exportBusy||!duration||(e.key!=='ArrowLeft'&&e.key!=='ArrowRight'))return;
