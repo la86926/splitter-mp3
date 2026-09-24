@@ -270,9 +270,13 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, hasTouch: browserName === 'chromium', acceptDownloads: true });
   const page = await context.newPage();
   const errors = [];
-  page.on('pageerror', error => errors.push(String(error)));
+  page.on('pageerror', error => errors.push('pageerror: ' + String(error)));
   page.on('console', message => {
-    if (message.type() === 'error') console.error('BROWSER ERROR:', message.text());
+    if (message.type() === 'error') {
+      const value = 'console: ' + message.text();
+      errors.push(value);
+      console.error('BROWSER ERROR:', message.text());
+    }
   });
   await page.goto('http://127.0.0.1:4173/', { waitUntil: 'networkidle', timeout: 30000 });
 
