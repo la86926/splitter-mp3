@@ -1930,14 +1930,20 @@
 
       const filters = [];
       const labels = [];
-      plan.forEach((clip, i) => {
-        const label = 'a' + i;
-        filters.push('[0:a]atrim=start=' + clip.start.toFixed(6) + ':end=' + clip.end.toFixed(6) + ',asetpts=PTS-STARTPTS[' + label + ']');
-        labels.push('[' + label + ']');
-      });
-      let filter = filters.join(';');
-      if (plan.length === 1) filter += ';' + labels[0] + 'anull[outa]';
-      else filter += ';' + labels.join('') + 'concat=n=' + plan.length + ':v=0:a=1[outa]';
+      if (plan.length === 1){
+        const clip = plan[0];
+        filters.push('[0:a]atrim=start=' + clip.start.toFixed(6) + ':end=' + clip.end.toFixed(6) + ',asetpts=PTS-STARTPTS[outa]');
+      } else {
+        const splitLabels = plan.map((_, i) => '[src' + i + ']').join('');
+        filters.push('[0:a]asplit=' + plan.length + splitLabels);
+        plan.forEach((clip, i) => {
+          const label = 'a' + i;
+          filters.push('[src' + i + ']atrim=start=' + clip.start.toFixed(6) + ':end=' + clip.end.toFixed(6) + ',asetpts=PTS-STARTPTS[' + label + ']');
+          labels.push('[' + label + ']');
+        });
+        filters.push(labels.join('') + 'concat=n=' + plan.length + ':v=0:a=1[outa]');
+      }
+      const filter = filters.join(';');
 
       const args = ['-i', inName, '-filter_complex', filter, '-map', '[outa]', '-vn', ...encoderArgs(ext), outName];
       stat.textContent = 'Generando el audio editado…';
