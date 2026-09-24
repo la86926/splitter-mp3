@@ -368,18 +368,6 @@
     *{ transition:none !important; animation:none !important; }
   }
 
-  /* SPLITTER_NATIVE_PATCH_V2 */
-  html,body{overscroll-behavior:none!important}
-  body{touch-action:pan-y!important}
-  .wave-box,#waveCanvas,.sel-frame,.handle,.playhead{touch-action:none!important}
-  .editor-tools{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 2px}
-  .editor-tool{width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--text-2);display:grid;place-items:center;transition:transform .15s ease,color .15s ease,background .15s ease}
-  .editor-tool:hover{color:var(--text);transform:translateY(-1px)}
-  .editor-tool:active{transform:scale(.95)}
-  .editor-tool:disabled{opacity:.35;cursor:default;transform:none}
-  .editor-tool.danger{color:#d34b3f}
-  .editor-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-
 
   /* SPLITTER_NATIVE_PATCH_V3 */
   html,body{overscroll-behavior:none!important}
@@ -629,7 +617,7 @@
     try { return localStorage.getItem('splitter-theme') || 'system'; } catch(e){ return 'system'; }
   }
   function saveTheme(v){
-    try { localStorage.setItem('splitter-theme', v); } catch(e){}
+    try { localStorage.setItem('splitter-theme', v); } catch(e){ console.debug('No se pudo guardar el tema.', e); }
   }
   function applyTheme(pref){
     const resolved = pref === 'system' ? (mql.matches ? 'dark' : 'light') : pref;
@@ -777,7 +765,7 @@
   let audioCtx = null, playingSrc = null, playT0 = 0, playFrom = 0, rafId = 0;
   let previewEl = null, previewURL = null, playMode = null; // 'el' (elemento <audio>) | 'wa' (Web Audio)
   let loopMode = 'none', playbackLoopClip = 0, playbackReachedEnd = false;
-  let cutLoadToken = 0, exportBusy = false;
+  let cutLoadToken = 0, exportBusy = false, ffOperationBusy = false;
 
   const waveBox = $('waveBox'), canvas = $('waveCanvas'), ctx2d = canvas.getContext('2d');
   const HANDLE_W = 22, MIN_GAP = 0.1;
@@ -921,9 +909,10 @@
   }
 
   bindDropzone($('dzCut'), $('fileCut'), files => loadCutFile(files[0]));
-  $('changeFile').addEventListener('click', () => $('fileCut').click());
+  $('changeFile').addEventListener('click', () => { if (!exportBusy && !ffOperationBusy) $('fileCut').click(); });
 
   async function loadCutFile(file){
+    if (exportBusy || ffOperationBusy) return;
     const loadToken = ++cutLoadToken;
     resetPreview();
     cutFile = file;
@@ -934,7 +923,7 @@
     nextPreview.setAttribute('playsinline', '');
     const nextURL = URL.createObjectURL(file);
     nextPreview.src = nextURL;
-    try { nextPreview.load(); } catch(_){}
+    try { nextPreview.load(); } catch(e){ console.debug('El navegador no permitió precargar el audio.', e); }
 
     $('fName').textContent = file.name;
     $('fmtBadge').textContent = (extOf(file.name) || 'audio').toUpperCase();
@@ -1105,6 +1094,7 @@
     drawWave();
     layoutSelection();
     layoutNavigator();
+    if (duration) updatePlayheadUI(currentPos());
   }
 
   function cssVar(name){
@@ -1264,7 +1254,7 @@
     }
     const metrics = navigatorMetrics();
     navigatorDrag = { id:e.pointerId, x:e.clientX, start:viewA, travel:metrics.travel, maxStart:metrics.maxStart };
-    try { waveNav.setPointerCapture(e.pointerId); } catch(_){}
+    try { waveNav.setPointerCapture(e.pointerId); } catch(err){ console.debug('No se pudo capturar el puntero del navegador de onda.', err); }
   });
   waveNav.addEventListener('pointermove', e => {
     if (!navigatorDrag || e.pointerId !== navigatorDrag.id) return;
@@ -1275,7 +1265,7 @@
   });
   function finishNavigatorDrag(e){
     if (!navigatorDrag || e.pointerId !== navigatorDrag.id) return;
-    try { waveNav.releasePointerCapture(e.pointerId); } catch(_){}
+    try { waveNav.releasePointerCapture(e.pointerId); } catch(err){ console.debug('No se pudo liberar el puntero del navegador de onda.', err); }
     navigatorDrag = null;
   }
   waveNav.addEventListener('pointerup', finishNavigatorDrag);
@@ -1403,7 +1393,7 @@
       seekTo(timeAtClientX(ev.clientX));
     };
     const up = ev => {
-      try{el.releasePointerCapture(e.pointerId)}catch(_){}
+      try{el.releasePointerCapture(e.pointerId)}catch(err){console.debug('No se pudo liberar el puntero.',err)}
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
@@ -1476,7 +1466,7 @@
       if(Math.abs(ev.clientX-startX)>4){moved=true;seekTo(timeAtClientX(ev.clientX));}
     };
     const up=ev=>{
-      try{canvas.releasePointerCapture(e.pointerId)}catch(_){}
+      try{canvas.releasePointerCapture(e.pointerId)}catch(err){console.debug('No se pudo liberar el puntero de la onda.',err)}
       canvas.removeEventListener('pointermove',move);
       canvas.removeEventListener('pointerup',up);
       canvas.removeEventListener('pointercancel',up);
@@ -1616,10 +1606,10 @@
     if (!playMode) return;
     posCursor = clamp(currentPos(), selStart, selEnd);
     if (playMode === 'el'){
-      try { previewEl.pause(); } catch(e){}
+      try { previewEl.pause(); } catch(e){ console.debug('No se pudo pausar el elemento de audio.', e); }
     } else {
       const src = playingSrc; playingSrc = null;
-      if (src){ try { src.stop(); } catch(e){} }
+      if (src){ try { src.stop(); } catch(e){ console.debug('La fuente Web Audio ya estaba detenida.', e); } }
     }
     playMode = null;
     cancelAnimationFrame(rafId);
@@ -1632,7 +1622,7 @@
   // Reinicio total (sólo al cargar otro archivo).
   function resetPreview(){
     pausePreview();
-    if (previewEl){ try { previewEl.pause(); } catch(e){} }
+    if (previewEl){ try { previewEl.pause(); } catch(e){ console.debug('No se pudo pausar el elemento de audio.', e); } }
     posCursor = 0;
     playbackReachedEnd = false;
     $('playhead').style.display = 'none';
@@ -1693,7 +1683,7 @@
     if (engine === 'wa'){
       const src = playingSrc;
       playingSrc = null;
-      if (src){ try { src.stop(); } catch(e){} }
+      if (src){ try { src.stop(); } catch(e){ console.debug('La fuente Web Audio ya estaba detenida.', e); } }
     }
 
     const clip = clips[next];
@@ -1747,7 +1737,7 @@
         await previewEl.play();
         started = true; playMode = 'el';
       } catch(e){
-        try { previewEl.pause(); } catch(_){}
+        try { previewEl.pause(); } catch(e){ console.debug('No se pudo pausar el audio tras un fallo de reproducción.', e); }
       }
     }
     // 2) Respaldo con Web Audio si el navegador no reproduce ese formato en <audio>
@@ -1787,10 +1777,10 @@
     if (loopMode === 'clip') playbackLoopClip = index;
     posCursor = t;
     if (playMode === 'el'){
-      try { previewEl.currentTime = t; } catch(e){}
+      try { previewEl.currentTime = t; } catch(e){ console.debug('No se pudo cambiar currentTime del audio.', e); }
     } else if (playMode === 'wa'){
       const src = playingSrc; playingSrc = null;
-      if (src){ try { src.stop(); } catch(e){} }
+      if (src){ try { src.stop(); } catch(e){ console.debug('La fuente Web Audio ya estaba detenida.', e); } }
       startWA(t);
     }
     showCursorUI();
@@ -1811,7 +1801,7 @@
     el.setPointerCapture(e.pointerId);
     const move = ev => { if (!touchReservedForPinch(ev)) seekTo(timeAtClientX(ev.clientX)); };
     const up = () => {
-      try{el.releasePointerCapture(e.pointerId)}catch(_){}
+      try{el.releasePointerCapture(e.pointerId)}catch(err){console.debug('No se pudo liberar el puntero.',err)}
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
@@ -1868,7 +1858,7 @@
       const width=Math.max(1,waveBox.getBoundingClientRect().width);
       const span=viewSpan();
       let changed=false;
-      try{el.setPointerCapture(e.pointerId)}catch(_){}
+      try{el.setPointerCapture(e.pointerId)}catch(err){console.debug('No se pudo capturar el puntero.',err)}
       const move=ev=>{
         if (touchReservedForPinch(ev)) return;
         const delta=(ev.clientX-startX)/width*span;
@@ -1883,7 +1873,7 @@
         showCursorUI();updatePlayheadUI(posCursor);
       };
       const up=ev=>{
-        try{el.releasePointerCapture(e.pointerId)}catch(_){}
+        try{el.releasePointerCapture(e.pointerId)}catch(err){console.debug('No se pudo liberar el puntero.',err)}
         el.removeEventListener('pointermove',move);
         el.removeEventListener('pointerup',up);
         el.removeEventListener('pointercancel',up);
@@ -1910,17 +1900,22 @@
 
   /* ---- Exportar todos los fragmentos conservados como un solo audio ---- */
   $('btnCut').addEventListener('click', async () => {
-    if (!cutFile || exportBusy) return;
+    if (!cutFile || exportBusy || ffOperationBusy) return;
+    const sourceFile = cutFile;
     const plan = clips.filter(clip => clip.end > clip.start + 0.001).map(clip => ({...clip}));
     if (!plan.length) return;
     pausePreview();
 
-    const ext = extOf(cutFile.name) || 'mp3';
+    const ext = extOf(sourceFile.name) || 'mp3';
     const inName = 'splitter_input.' + ext, outName = 'splitter_output.' + ext;
     const tempNames = [inName, outName];
     const btn = $('btnCut'), prog = $('progCut'), bar = $('barCut'), stat = $('statCut');
     exportBusy = true;
-    btn.disabled = true; prog.style.display = 'block'; bar.style.width = '0%';
+    ffOperationBusy = true;
+    btn.disabled = true;
+    $('changeFile').disabled = true;
+    $('btnJoin').disabled = true;
+    prog.style.display = 'block'; bar.style.width = '0%';
     refreshEditButtons();
 
     try {
@@ -1931,7 +1926,7 @@
       });
       ffCleanup(tempNames);
       stat.textContent = 'Preparando ' + plan.length + (plan.length === 1 ? ' fragmento…' : ' fragmentos…');
-      ff.FS('writeFile', inName, await window.FFmpeg.fetchFile(cutFile));
+      ff.FS('writeFile', inName, await window.FFmpeg.fetchFile(sourceFile));
 
       const filters = [];
       const labels = [];
@@ -1950,7 +1945,7 @@
       const data = ff.FS('readFile', outName);
       if (!data || !data.length) throw new Error('FFmpeg generó una salida vacía.');
 
-      downloadBytes(data, baseOf(cutFile.name) + ' (editado).' + ext, MIMES[ext]);
+      downloadBytes(data, baseOf(sourceFile.name) + ' (editado).' + ext, MIMES[ext]);
       bar.style.width = '100%';
       stat.textContent = 'Listo: se descargó un solo audio con ' + plan.length + (plan.length === 1 ? ' fragmento' : ' fragmentos') + ' (' + fmtTime(plan.reduce((sum,c)=>sum+c.end-c.start,0), true) + ').';
     } catch(err){
@@ -1959,7 +1954,10 @@
     } finally {
       ffCleanup(tempNames);
       exportBusy = false;
+      ffOperationBusy = false;
       btn.disabled = false;
+      $('changeFile').disabled = false;
+      renderJoin();
       refreshEditButtons();
       setTimeout(() => { prog.style.display = 'none'; }, 1200);
     }
@@ -2009,7 +2007,7 @@
   function iconBtn(label, path, disabled, onClick){
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'icon-btn'; b.title = label; b.setAttribute('aria-label', label);
-    b.disabled = disabled;
+    b.disabled = disabled || ffOperationBusy;
     b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
     b.addEventListener('click', onClick);
     return b;
@@ -2020,10 +2018,15 @@
   }
 
   $('btnJoin').addEventListener('click', async () => {
-    if (joinFiles.length < 2) return;
-    const ext = extOf(joinFiles[0].name) || 'mp3';
+    if (joinFiles.length < 2 || ffOperationBusy) return;
+    const files = joinFiles.slice();
+    const ext = extOf(files[0].name) || 'mp3';
     const btn = $('btnJoin'), prog = $('progJoin'), bar = $('barJoin'), stat = $('statJoin');
-    btn.disabled = true; prog.style.display = 'block'; bar.style.width = '0%';
+    ffOperationBusy = true;
+    btn.disabled = true;
+    $('btnCut').disabled = true;
+    $('changeFile').disabled = true;
+    prog.style.display = 'block'; bar.style.width = '0%';
     const names = [];
     const outName = 'splitter_joined.' + ext;
 
@@ -2033,23 +2036,23 @@
       ff.setProgress(({ ratio }) => {
         if (ratio >= 0 && ratio <= 1) bar.style.width = Math.round(ratio * 100) + '%';
       });
-      stat.textContent = 'Uniendo ' + joinFiles.length + ' archivos…';
+      stat.textContent = 'Uniendo ' + files.length + ' archivos…';
 
       const args = [];
-      for (let i = 0; i < joinFiles.length; i++){
+      for (let i = 0; i < files.length; i++){
         const n = 'splitter_join_' + i + '.' + ext;
         ffCleanup([n]);
-        ff.FS('writeFile', n, await window.FFmpeg.fetchFile(joinFiles[i]));
+        ff.FS('writeFile', n, await window.FFmpeg.fetchFile(files[i]));
         names.push(n);
         args.push('-i', n);
       }
       ffCleanup([outName]);
-      const labels = joinFiles.map((_,i) => '[' + i + ':a]').join('');
-      args.push('-filter_complex', labels + 'concat=n=' + joinFiles.length + ':v=0:a=1[outa]', '-map', '[outa]', '-vn', ...encoderArgs(ext), outName);
+      const labels = files.map((_,i) => '[' + i + ':a]').join('');
+      args.push('-filter_complex', labels + 'concat=n=' + files.length + ':v=0:a=1[outa]', '-map', '[outa]', '-vn', ...encoderArgs(ext), outName);
       await ff.run(...args);
       const data = ff.FS('readFile', outName);
       if (!data || !data.length) throw new Error('FFmpeg generó una salida vacía.');
-      const base = baseOf(joinFiles[0].name);
+      const base = baseOf(files[0].name);
       downloadBytes(data, base + ' (unido).' + ext, MIMES[ext]);
       bar.style.width = '100%';
       stat.textContent = 'Listo: se descargó el archivo unido.';
@@ -2058,7 +2061,11 @@
       stat.textContent = 'No se pudo unir: ' + ffErrorMessage(err);
     } finally {
       ffCleanup([...names, outName]);
-      btn.disabled = joinFiles.length < 2 || new Set(joinFiles.map(f => extOf(f.name))).size > 1;
+      ffOperationBusy = false;
+      $('btnCut').disabled = false;
+      $('changeFile').disabled = false;
+      renderJoin();
+      refreshEditButtons();
       setTimeout(() => { prog.style.display = 'none'; }, 1200);
     }
   });
@@ -2134,7 +2141,8 @@
     clips.splice(removed,1);
     activeClip=Math.min(removed,clips.length-1);
     const clip=currentClip();
-    selStart=clip.start;selEnd=clip.end;posCursor=clip.start;
+    selStart=clip.start;selEnd=clip.end;
+    posCursor=removed < clips.length ? clip.start : Math.max(clip.start,clip.end-.02);
     preserveViewAfterDelete(oldViewA,oldViewB,deleted.start,deleted.end);
     syncAll('delete');showCursorUI();updatePlayheadUI(posCursor);refreshEditButtons();
   });
