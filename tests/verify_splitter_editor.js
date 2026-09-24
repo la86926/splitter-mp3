@@ -164,10 +164,14 @@ async function fullChromium(page, context, errors) {
   s = await state(page);
   assert(s.clipCount === 3, 'No se pudo continuar editando después de exportar.');
 
-  await clickWaveRatio(page, 0.62);
+  // Tras cortar, el cursor queda al inicio del tercer fragmento. Alt/Option+← debe llevarlo
+  // exactamente al límite anterior y activar el fragmento intermedio, sin depender del viewport.
+  await page.keyboard.press('Alt+ArrowLeft');
+  let selectedMiddle = await state(page);
+  assert(selectedMiddle.activeClip === 1, 'Alt/Option+← no activó el fragmento intermedio.');
   await wheelZoom(page, 0.62, -600);
   const beforeDelete = await state(page);
-  assert(beforeDelete.activeClip === 1, 'No se activó el fragmento intermedio antes de eliminar.');
+  assert(beforeDelete.activeClip === 1, 'El zoom cambió inesperadamente el fragmento activo.');
   const deleteSpan = beforeDelete.viewB - beforeDelete.viewA;
   await page.locator('#editDelete').click();
   const afterDelete = await state(page);
